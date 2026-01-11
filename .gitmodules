@@ -1,0 +1,3 @@
+[submodule "external/constrained-clustering"]
+	path = external/constrained-clustering
+	url = https://github.com/MinhyukPark/constrained-clustering
