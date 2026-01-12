@@ -44,6 +44,7 @@ int main(int argc, char** argv) {
     std::string clusters_dir;
     std::string logs_dir;
     std::string output_dir;
+    std::string pending_dir;
 
     // Rank 0 (root) parses arguments and launches load balancer
     try {
@@ -167,7 +168,9 @@ int main(int argc, char** argv) {
     clusters_dir = work_dir + "/" + "clusters";
     logs_dir = work_dir + "/" + "logs";
     output_dir = work_dir + "/" + "output";
+    pending_dir = work_dir + "/" + "pending";
     fs::create_directories(output_dir);
+    fs::create_directory(pending_dir);          // TODO: this is not a clean to do this
 
     // Initialize workers
     Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);

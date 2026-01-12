@@ -6,7 +6,10 @@
 #include <set>
 #include <sstream>
 #include <fstream>
+#include <filesystem>
 #include <stdexcept>
+
+namespace fs = std::filesystem;
 
 // Constructor
 LoadBalancer::LoadBalancer(const std::string& edgelist,
@@ -208,10 +211,10 @@ void LoadBalancer::run() {
     MPI_Comm_size(MPI_COMM_WORLD, &active_workers);
 
     while (active_workers > 0) {
-        // Listen to incoming job requests
+        // Listen to incoming messages from workers
         int message;
         MPI_Status status;
-        MPI_Recv(&message, 1, MPI_INT, MPI_ANY_SOURCE, to_int(MessageType::WORK_REQUEST), MPI_COMM_WORLD, &status);
+        MPI_Recv(&message, 1, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 
         // Check message type
         int worker_rank = status.MPI_SOURCE;
@@ -235,6 +238,7 @@ void LoadBalancer::run() {
                     " to worker " + std::to_string(worker_rank) +
                     " (" + std::to_string(unprocessed_clusters.size()) + " jobs remaining)");
 
+                std::ofstream pending_out(work_dir + "/" + "pending" + "/" + std::to_string(assign_cluster));
             } else {
                 assign_cluster = NO_MORE_JOBS;
                 logger.info("Sending termination signal to worker " + std::to_string(worker_rank));
@@ -244,6 +248,12 @@ void LoadBalancer::run() {
             MPI_Send(&assign_cluster, 1, MPI_INT, worker_rank, to_int(MessageType::DISTRIBUTE_WORK), MPI_COMM_WORLD);
         } else if (message_type == MessageType::WORK_DONE) {
             logger.info("Worker " + std::to_string(worker_rank) + " completed cluster " + std::to_string(message));
+
+            try {
+                fs::remove(work_dir + "/" + "pending" + "/" + std::to_string(message));
+            } catch(const std::exception e) {
+                logger.error("No pending file found for cluster " + std::to_string(message));
+            }
         } else if (message_type == MessageType::WORK_ABORTED) {
             logger.info("Worker " + std::to_string(worker_rank) + " aborted cluster " + std::to_string(message));
         }
