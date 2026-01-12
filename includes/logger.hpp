@@ -63,7 +63,7 @@ public:
     }
 
     void log(const std::string& message, LogLevel message_type = LogLevel::INFO) {
-        if (!enabled || message_type < log_level) {
+        if (!enabled || message_type > log_level) {
             return;
         }
 
