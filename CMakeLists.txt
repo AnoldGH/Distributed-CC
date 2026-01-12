@@ -30,6 +30,7 @@ else()
     add_executable(distributed_connectivity_modifier
         src/main.cpp
         src/load_balancer.cpp
+        src/worker.cpp
     )
 
     target_include_directories(distributed_connectivity_modifier PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/includes)

@@ -5,6 +5,8 @@
 #include <mpi.h>
 #include <argparse.h>
 #include <load_balancer.hpp>
+#include <worker.hpp>
+#include <utils.hpp>
 
 namespace fs = std::filesystem; // for brevity
 
@@ -25,8 +27,23 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    // Load balancer refernece
+    // Load balancer reference
     std::unique_ptr<LoadBalancer> lb;
+    std::thread lb_thread; // Load balancer thread (only used by rank 0)
+
+    // Declarations
+    std::string edgelist;
+    std::string existing_clustering;
+    std::string output_file;
+    std::string work_dir;
+    int log_level;
+    std::string connectedness_criterion;
+    bool prune;
+    std::string mincut_type;
+
+    std::string clusters_dir;
+    std::string logs_dir;
+    std::string output_dir;
 
     // Rank 0 (root) parses arguments and launches load balancer
     try {
@@ -94,32 +111,24 @@ int main(int argc, char** argv) {
                 MPI_Abort(MPI_COMM_WORLD, 1);   // TODO: error handling
             }
 
-            // TODO: Spawn load balancer thread
-            // std::thread load_balancer_thread(LoadBalancer::load_balancer_function);
-            // load_balancer_thread.detach();
-
             std::cerr << "Arguments parsed" << std::endl;
 
             if (main_program.is_subcommand_used(cm)) {
-                std::string edgelist = cm.get<std::string>("--edgelist");
+                edgelist = cm.get<std::string>("--edgelist");
                 // std::string algorithm = cm.get<std::string>("--algorithm");
                 // double clustering_parameter = cm.get<double>("--clustering-parameter");
-                std::string existing_clustering = cm.get<std::string>("--existing-clustering");
-                std::string output_file = cm.get<std::string>("--output-file");
-                std::string work_dir = cm.get<std::string>("--work-dir");
+                existing_clustering = cm.get<std::string>("--existing-clustering");
+                output_file = cm.get<std::string>("--output-file");
+                work_dir = cm.get<std::string>("--work-dir");
                 // std::string log_file = cm.get<std::string>("--log-file");
-                int log_level = cm.get<int>("--log-level") - 1; // so that enum is cleaner
-                std::string connectedness_criterion = cm.get<std::string>("--connectedness-criterion");
-                bool prune = false;
+                log_level = cm.get<int>("--log-level") - 1; // so that enum is cleaner
+                connectedness_criterion = cm.get<std::string>("--connectedness-criterion");
+                prune = false;
                 if (cm["--prune"] == true) {
                     prune = true;
                     std::cerr << "pruning" << std::endl;
                 }
-                std::string mincut_type = cm.get<std::string>("--mincut-type");
-                // ConstrainedClustering* connectivity_modifier = new CM(edgelist, algorithm, clustering_parameter, existing_clustering, num_processors, output_file, log_file, log_level, connectedness_criterion, prune, mincut_type);
-                // random_functions::setSeed(0);
-                // connectivity_modifier->main();
-                // delete connectivity_modifier;
+                mincut_type = cm.get<std::string>("--mincut-type");
 
                 /**
                  * TODO: checkpointing
@@ -127,8 +136,8 @@ int main(int argc, char** argv) {
                  */
 
                 // Ensure work-dir and sub-dir's exist
-                const std::string clusters_dir = work_dir + "/" + "clusters";
-                const std::string logs_dir = work_dir + "/" + "logs";
+                clusters_dir = work_dir + "/" + "clusters";
+                logs_dir = work_dir + "/" + "logs";
                 fs::create_directories(clusters_dir);
                 fs::create_directory(logs_dir);
 
@@ -136,8 +145,7 @@ int main(int argc, char** argv) {
                 lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, log_level);
 
                 // Spawn thread for runtime phase (job distribution)
-                std::thread lb_thread(&LoadBalancer::run, lb.get());
-                lb_thread.detach();
+                lb_thread = std::thread(&LoadBalancer::run, lb.get());
             }
 
         }
@@ -148,15 +156,34 @@ int main(int argc, char** argv) {
         MPI_Abort(MPI_COMM_WORLD, 1);   // TODO: error handling
     }
 
+    // Synchronize arguments
+    bcast_string(work_dir, 0, MPI_COMM_WORLD);
+    bcast_string(connectedness_criterion, 0, MPI_COMM_WORLD);
+    bcast_string(mincut_type, 0, MPI_COMM_WORLD);
+
+    MPI_Bcast(&log_level, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&prune, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
+
+    clusters_dir = work_dir + "/" + "clusters";
+    logs_dir = work_dir + "/" + "logs";
+    output_dir = work_dir + "/" + "output";
+
+    // Initialize workers
+    Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);
+    std::unique_ptr<Worker> worker = std::make_unique<Worker>(worker_logger);
+
     // All ranks wait here until rank 0 completes initialization
     MPI_Barrier(MPI_COMM_WORLD);
 
-    // TODO: Implement worker_function
-    // All ranks (including rank 0) now act as workers
-    std::cerr << "Rank " << rank << " ready to start working" << std::endl;
+    // Start workers
+    std::thread worker_thread(&Worker::run, worker.get());
 
-    // Placeholder: workers will request jobs from load balancer
-    // worker_function(rank, size);
+    // Join threads before MPI finalization
+    worker_thread.join();
+
+    if (rank == 0 && lb_thread.joinable()) {
+        lb_thread.join();
+    }
 
     MPI_Finalize();
     return 0;
