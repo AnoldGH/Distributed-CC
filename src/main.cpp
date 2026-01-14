@@ -28,11 +28,11 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
     /**
-     * If total number of MPI ranks is less than or equal to 4, we use rank 0 as a worker as well.
-     *  The load balancer and worker 0 will be two threads living on the same rank. The overhead is acceptable because there isn't much communication.
+     * Use rank 0 as a worker only if there is only one rank (i.e., there is essentially no need for a load balancer), and jobs run sequentially.
+     *  The load balancer and worker 0 will be two threads living on the same rank. The overhead is low because there isn't much communication.
      * Otherwise, rank 0 is entirely the load balancer to reduce the burden.
      */
-    bool use_rank_0_worker = (size <= 4);
+    bool use_rank_0_worker = (size == 1);
 
     // Load balancer reference
     std::unique_ptr<LoadBalancer> lb;
