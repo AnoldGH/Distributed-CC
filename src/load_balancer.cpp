@@ -309,8 +309,6 @@ void LoadBalancer::run() {
         out.flush();
 
         start_cluster_id += (max_cluster_id + 1);
-        --active_workers;
-
         logger.info("Scanned worker " + std::to_string(worker_rank) + " output.");
     }
 
