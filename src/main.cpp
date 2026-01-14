@@ -27,6 +27,8 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    int num_workers = size - 1;  // Rank 0 is pure LoadBalancer, workers are ranks 1 to size-1
+
     // Load balancer reference
     std::unique_ptr<LoadBalancer> lb;
     std::thread lb_thread; // Load balancer thread (only used by rank 0)
@@ -148,7 +150,7 @@ int main(int argc, char** argv) {
                 fs::create_directories(logs_clusters_dir);
 
                 // Initialize LoadBalancer (this partitions clustering and initializes job queue)
-                lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, output_file, log_level);
+                lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, output_file, log_level, num_workers);
 
                 // Spawn thread for runtime phase (job distribution)
                 lb_thread = std::thread(&LoadBalancer::run, lb.get());
@@ -174,24 +176,26 @@ int main(int argc, char** argv) {
 
     clusters_dir = work_dir + "/" + "clusters";
     logs_dir = work_dir + "/" + "logs";
-    output_dir = work_dir + "/" + "output/worker_" + std::to_string(rank);
     pending_dir = work_dir + "/" + "pending";
-    fs::create_directories(output_dir);
-    fs::create_directory(pending_dir);          // TODO: this is not a clean to do this
 
-    // Initialize workers
-    Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);
-    std::unique_ptr<Worker> worker = std::make_unique<Worker>(
-        worker_logger, work_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune);
+    // Only worker ranks (1 to N-1) create output directories
+    if (rank != 0) {
+        output_dir = work_dir + "/" + "output/worker_" + std::to_string(rank);
+        fs::create_directories(output_dir);
+    }
+    fs::create_directory(pending_dir);          // TODO: this is not a clean to do this
 
     // All ranks wait here until rank 0 completes initialization
     MPI_Barrier(MPI_COMM_WORLD);
 
-    // Start workers
-    std::thread worker_thread(&Worker::run, worker.get());
+    // Only worker ranks (1 to N-1) run workers
+    if (rank != 0) {
+        Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);
+        std::unique_ptr<Worker> worker = std::make_unique<Worker>(
+            worker_logger, work_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune);
 
-    // Join threads before MPI finalization
-    worker_thread.join();
+        worker->run();
+    }
 
     if (rank == 0 && lb_thread.joinable()) {
         lb_thread.join();
