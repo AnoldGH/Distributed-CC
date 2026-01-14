@@ -16,7 +16,7 @@ private:
     Logger logger;
     std::string work_dir;
     std::string output_file;
-    int num_workers;  // number of workers
+    bool use_rank_0_worker;
     std::vector<ClusterInfo> unprocessed_clusters;  // Vector of unprocessed clusters
 
     /**
@@ -44,7 +44,7 @@ public:
                 const std::string& work_dir,
                 const std::string& output_file,
                 int log_level,
-                int num_workers);
+                bool use_rank_0_worker);
 
     /**
      * Runtime phase: Distribute jobs to workers

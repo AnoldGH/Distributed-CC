@@ -17,11 +17,11 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
                           const std::string& work_dir,
                           const std::string& output_file,
                           int log_level,
-                          int num_workers)
+                          bool use_rank_0_worker)
     : logger(work_dir + "/logs/load_balancer.log", log_level),
       work_dir(work_dir),
       output_file(output_file),
-      num_workers(num_workers) {
+      use_rank_0_worker(use_rank_0_worker) {
 
     const std::string clusters_dir = work_dir + "/" + "clusters";
 
@@ -212,6 +212,11 @@ void LoadBalancer::initialize_job_queue(const std::vector<ClusterInfo>& created_
 // Runtime phase: Distribute jobs to workers
 void LoadBalancer::run() {
     logger.info("LoadBalancer runtime phase started");
+
+    int size;
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    int num_workers = use_rank_0_worker ? size : size - 1;
+
     logger.info("Managing " + std::to_string(num_workers) + " workers");
 
     int active_workers = num_workers;
@@ -268,16 +273,15 @@ void LoadBalancer::run() {
     }
 
     // Aggregation phase: combine outputs from all workers
-    int start_cluster_id = 0;   // TODO: technically, we need to worry about overflows. Omit this for now.
+    int start_cluster_id = 0;
     std::string clusters_output_dir = work_dir + "/output/";
 
-    // Clean existing output file, if there is one
     fs::remove(output_file);
     std::ofstream out(output_file, std::ios::app);
-    out << "node_id,cluster_id\n";  // Header for first file
+    out << "node_id,cluster_id\n";
 
-    // Workers are ranks 1 to num_workers (rank 0 is LoadBalancer only)
-    for (int worker_rank = 1; worker_rank <= num_workers; ++worker_rank) {
+    int first_worker = use_rank_0_worker ? 0 : 1;
+    for (int worker_rank = first_worker; worker_rank < size; ++worker_rank) {
         std::string worker_output_file = clusters_output_dir + "worker_" + std::to_string(worker_rank) + ".out";
 
         // Aggregation logic
