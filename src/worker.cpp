@@ -30,6 +30,10 @@ void Worker::run() {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
+    // Create needed directory
+    fs::create_directories(work_dir + "/output/worker_" + std::to_string(rank) + "/");
+    fs::create_directories(work_dir + "/history/worker_" + std::to_string(rank) + "/");
+
     // Worker main loop
     while (true) {
         // Send work request to load balancer (rank 0)
@@ -137,9 +141,10 @@ bool Worker::process_cluster(int cluster_id) {
 
         // TODO: CM logic
         std::string output_file = work_dir + "/output/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".output";
+        std::string history_file = work_dir + "/history/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".hist";
         std::string log_file = work_dir + "/logs/clusters/" + std::to_string(cluster_id) + ".log"; // TODO: since CC was built as a standalone app with its own logging system, we have to use a different file. In the future we should try to integrate the two systems into one unified logging system.
 
-        ConstrainedClustering* connectivity_modifier = new CM(cluster_edgelist, this->algorithm, this->clustering_parameter, cluster_clustering_file, 1, output_file, log_file, this->log_level, this->connectedness_criterion, this->prune, this->mincut_type);
+        ConstrainedClustering* connectivity_modifier = new CM(cluster_edgelist, this->algorithm, this->clustering_parameter, cluster_clustering_file, 1, output_file, log_file, history_file, this->log_level, this->connectedness_criterion, this->prune, this->mincut_type);
 
         connectivity_modifier->main();  // run CM
 
