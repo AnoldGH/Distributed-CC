@@ -13,6 +13,7 @@ private:
     std::string connectedness_criterion;
     std::string mincut_type;
     bool prune;
+    int time_limit_per_cluster;  // -1 = no limit
 
     /**
      * Process a single cluster
@@ -24,6 +25,7 @@ public:
     Worker(Logger& logger, const std::string& work_dir,
            const std::string& algorithm, double clustering_parameter,
            int log_level, const std::string& connectedness_criterion,
-           const std::string& mincut_type, bool prune);
+           const std::string& mincut_type, bool prune,
+           int time_limit_per_cluster = -1);
     void run();
 };

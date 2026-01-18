@@ -4,6 +4,8 @@
 #include <cm.h>
 #include <constrained.h>
 
+#include <atomic>
+#include <condition_variable>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -17,11 +19,13 @@ namespace fs = std::filesystem;
 Worker::Worker(Logger& logger, const std::string& work_dir,
                const std::string& algorithm, double clustering_parameter,
                int log_level, const std::string& connectedness_criterion,
-               const std::string& mincut_type, bool prune)
+               const std::string& mincut_type, bool prune,
+               int time_limit_per_cluster)
     : logger(logger), work_dir(work_dir),
       algorithm(algorithm), clustering_parameter(clustering_parameter),
       log_level(log_level), connectedness_criterion(connectedness_criterion),
-      mincut_type(mincut_type), prune(prune) {}
+      mincut_type(mincut_type), prune(prune),
+      time_limit_per_cluster(time_limit_per_cluster) {}
 
 // Main run function
 void Worker::run() {
@@ -152,10 +156,45 @@ bool Worker::process_cluster(int cluster_id) {
         exit(0);    // exits successfully
     } else if (pid > 0) {    // control process
         int status;
-        waitpid(pid, &status, 0);
-        logger.flush();
+        bool timed_out = false;
 
-        // Check how child terminates
+        // With timeout: use timer thread
+        if (time_limit_per_cluster > 0) {
+            bool child_done = false;
+            std::mutex mtx;
+            std::condition_variable cv;
+
+            std::thread timer([&]() {
+                std::unique_lock<std::mutex> lock(mtx);
+                // Wait for timeout or early wake-up
+                if (!cv.wait_for(lock, std::chrono::seconds(time_limit_per_cluster), [&] { return child_done; })) {
+                    // Timeout occurred
+                    timed_out = true;
+                    kill(pid, SIGKILL);
+                }
+            });
+
+            waitpid(pid, &status, 0);
+            logger.flush();
+
+            // Wake up timer thread
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                child_done = true;
+            }
+            cv.notify_one();
+            timer.join();
+        } else {    // no timeout: execute and wait for status
+            waitpid(pid, &status, 0);
+            logger.flush();
+        }
+
+        if (timed_out) {
+            logger.log("Timeout. Child was killed after " + std::to_string(time_limit_per_cluster) + " seconds");
+            return false;
+        }
+
+        // Check how child terminated
         if (WIFEXITED(status)) {
             logger.log("Child exited with code: " + std::to_string(WEXITSTATUS(status)));
             return WEXITSTATUS(status) == 0;

@@ -47,6 +47,7 @@ int main(int argc, char** argv) {
     std::string connectedness_criterion;
     bool prune;
     std::string mincut_type;
+    int time_limit_per_cluster;
 
     std::string algorithm;
     double clustering_parameter;
@@ -110,6 +111,10 @@ int main(int argc, char** argv) {
             cm.add_argument("--mincut-type")
                 .default_value("cactus")
                 .help("Mincut type used (cactus or noi)");
+            cm.add_argument("--time-limit-per-cluster")
+                .default_value(int(-1))
+                .help("Time limit in seconds for each cluster (-1 = no limit)")
+                .scan<'d', int>();
 
             // TODO: support WCC in the future?
 
@@ -141,6 +146,7 @@ int main(int argc, char** argv) {
                     std::cerr << "pruning" << std::endl;
                 }
                 mincut_type = cm.get<std::string>("--mincut-type");
+                time_limit_per_cluster = cm.get<int>("--time-limit-per-cluster");
 
                 /**
                  * TODO: checkpointing
@@ -179,6 +185,7 @@ int main(int argc, char** argv) {
     MPI_Bcast(&log_level, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&prune, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
     MPI_Bcast(&use_rank_0_worker, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&time_limit_per_cluster, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
     clusters_dir = work_dir + "/" + "clusters";
     logs_dir = work_dir + "/" + "logs";
@@ -197,7 +204,7 @@ int main(int argc, char** argv) {
     if (is_worker) {
         Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);
         std::unique_ptr<Worker> worker = std::make_unique<Worker>(
-            worker_logger, work_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune);
+            worker_logger, work_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster);
 
         worker->run();
     }
