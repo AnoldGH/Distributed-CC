@@ -157,8 +157,10 @@ bool Worker::process_cluster(int cluster_id) {
         // Check how child terminates
         if (WIFEXITED(status)) {
             logger.log("Child exited with code: " + std::to_string(WEXITSTATUS(status)));
+            return WEXITSTATUS(status) == 0;
         } else {
             logger.log("Child killed by signal: " + std::to_string(WTERMSIG(status)));
+            return false;
         }
     } else {
         logger.log("Fork failed");  // TODO: this is serious. Need explicit handling
