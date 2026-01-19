@@ -17,11 +17,12 @@ namespace fs = std::filesystem;
 
 // Constructor
 Worker::Worker(Logger& logger, const std::string& work_dir,
+               const std::string& clusters_dir,
                const std::string& algorithm, double clustering_parameter,
                int log_level, const std::string& connectedness_criterion,
                const std::string& mincut_type, bool prune,
                int time_limit_per_cluster)
-    : logger(logger), work_dir(work_dir),
+    : logger(logger), work_dir(work_dir), clusters_dir(clusters_dir),
       algorithm(algorithm), clustering_parameter(clustering_parameter),
       log_level(log_level), connectedness_criterion(connectedness_criterion),
       mincut_type(mincut_type), prune(prune),
@@ -130,8 +131,8 @@ bool Worker::process_cluster(int cluster_id) {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    std::string cluster_edgelist = work_dir + "/clusters/" + std::to_string(cluster_id) + ".edgelist";
-    std::string cluster_clustering_file = work_dir + "/clusters/" + std::to_string(cluster_id) + ".cluster";
+    std::string cluster_edgelist = clusters_dir + "/" + std::to_string(cluster_id) + ".edgelist";
+    std::string cluster_clustering_file = clusters_dir + "/" + std::to_string(cluster_id) + ".cluster";
     logger.debug("Processing cluster file: " + cluster_edgelist);
 
     logger.flush(); // to avoid duplicate logs after fork()

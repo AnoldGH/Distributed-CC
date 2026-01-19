@@ -185,6 +185,7 @@ int main(int argc, char** argv) {
     bcast_string(connectedness_criterion, 0, MPI_COMM_WORLD);
     bcast_string(mincut_type, 0, MPI_COMM_WORLD);
     bcast_string(algorithm, 0, MPI_COMM_WORLD);
+    bcast_string(partitioned_clusters_dir, 0, MPI_COMM_WORLD);
 
     MPI_Bcast(&clustering_parameter, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Bcast(&log_level, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -193,6 +194,9 @@ int main(int argc, char** argv) {
     MPI_Bcast(&time_limit_per_cluster, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
     clusters_dir = work_dir + "/" + "clusters";
+    if (!partitioned_clusters_dir.empty()) {
+        clusters_dir = partitioned_clusters_dir;
+    }
     logs_dir = work_dir + "/" + "logs";
     pending_dir = work_dir + "/" + "pending";
 
@@ -209,7 +213,7 @@ int main(int argc, char** argv) {
     if (is_worker) {
         Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);
         std::unique_ptr<Worker> worker = std::make_unique<Worker>(
-            worker_logger, work_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster);
+            worker_logger, work_dir, clusters_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster);
 
         worker->run();
     }
