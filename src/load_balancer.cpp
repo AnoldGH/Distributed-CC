@@ -18,7 +18,8 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
                           const std::string& output_file,
                           int log_level,
                           bool use_rank_0_worker,
-                          const std::string& partitioned_clusters_dir)
+                          const std::string& partitioned_clusters_dir,
+                          bool partition_only)
     : logger(work_dir + "/logs/load_balancer.log", log_level),
       work_dir(work_dir),
       output_file(output_file),
@@ -38,6 +39,11 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
     } else {
         logger.info("Partitioning clustering into individual cluster files");
         created_clusters = partition_clustering(edgelist, cluster_file, clusters_dir);
+    }
+
+    if (partition_only) {
+        logger.info("Partition-only mode: skipping job queue initialization");
+        return;
     }
 
     // Phase 2: Initialize job queue from created cluster files

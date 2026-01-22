@@ -48,6 +48,7 @@ int main(int argc, char** argv) {
     bool prune;
     std::string mincut_type;
     int time_limit_per_cluster;
+    bool partition_only;
 
     std::string algorithm;
     double clustering_parameter;
@@ -119,6 +120,10 @@ int main(int argc, char** argv) {
             cm.add_argument("--partitioned-clusters-dir")
                 .default_value(std::string(""))
                 .help("Path to pre-partitioned clusters directory (skips partitioning if provided)");
+            cm.add_argument("--partition-only")
+                .default_value(false)
+                .implicit_value(true)
+                .help("Stop after partitioning (Phase 1) without launching computation jobs");
 
             // TODO: support WCC in the future?
 
@@ -152,6 +157,7 @@ int main(int argc, char** argv) {
                 mincut_type = cm.get<std::string>("--mincut-type");
                 time_limit_per_cluster = cm.get<int>("--time-limit-per-cluster");
                 partitioned_clusters_dir = cm.get<std::string>("--partitioned-clusters-dir");
+                partition_only = cm.get<bool>("--partition-only");
 
                 /**
                  * TODO: checkpointing
@@ -166,10 +172,14 @@ int main(int argc, char** argv) {
                 fs::create_directories(logs_clusters_dir);
 
                 // Initialize LoadBalancer (this partitions clustering and initializes job queue)
-                lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir);
+                lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only);
 
-                // Spawn thread for runtime phase (job distribution)
-                lb_thread = std::thread(&LoadBalancer::run, lb.get());
+                if (partition_only) {
+                    std::cerr << "Partition-only mode: won't start the load balancer" << std::endl;
+                } else {
+                    // Spawn thread for runtime phase (job distribution)
+                    lb_thread = std::thread(&LoadBalancer::run, lb.get());
+                }
             }
 
         }
@@ -192,6 +202,7 @@ int main(int argc, char** argv) {
     MPI_Bcast(&prune, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
     MPI_Bcast(&use_rank_0_worker, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
     MPI_Bcast(&time_limit_per_cluster, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&partition_only, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
 
     clusters_dir = work_dir + "/" + "clusters";
     if (!partitioned_clusters_dir.empty()) {
@@ -210,16 +221,18 @@ int main(int argc, char** argv) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    if (is_worker) {
-        Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);
-        std::unique_ptr<Worker> worker = std::make_unique<Worker>(
-            worker_logger, work_dir, clusters_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster);
+    if (!partition_only) {  // Partition-only mode, no need to spawn worker
+        if (is_worker) {
+            Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);
+            std::unique_ptr<Worker> worker = std::make_unique<Worker>(
+                worker_logger, work_dir, clusters_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster);
 
-        worker->run();
-    }
+            worker->run();
+        }
 
-    if (rank == 0 && lb_thread.joinable()) {
-        lb_thread.join();
+        if (rank == 0 && lb_thread.joinable()) {
+            lb_thread.join();
+        }
     }
 
     MPI_Finalize();
