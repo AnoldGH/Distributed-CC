@@ -13,6 +13,7 @@
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <algorithm>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
@@ -93,7 +94,7 @@ void Worker::run() {
     std::ofstream out(worker_output_file);
     out << "node_id,cluster_id\n";  // Header
 
-    int start_cluster_id = 0;
+    int next_cluster_id = 0;
 
     // Iterate over all files in the worker-specific subdirectory
     for (const auto& entry : fs::directory_iterator(worker_subdir)) {
@@ -104,7 +105,8 @@ void Worker::run() {
             std::string line;
             std::getline(in, line);  // Skip header
 
-            int max_cluster_id = -1;
+            std::unordered_map<int, int> cluster_mapping;  // per-file mapping
+
             while (std::getline(in, line)) {
                 std::stringstream ss(line);
                 std::string node_str, cluster_str;
@@ -113,13 +115,16 @@ void Worker::run() {
 
                 int node_id = std::stoi(node_str);
                 int cluster_id = std::stoi(cluster_str);
-                max_cluster_id = std::max(max_cluster_id, cluster_id);
 
-                out << node_id << "," << (cluster_id + start_cluster_id) << "\n";
+                // Assign new global ID if this cluster_id hasn't been seen in this file
+                if (cluster_mapping.find(cluster_id) == cluster_mapping.end()) {
+                    cluster_mapping[cluster_id] = next_cluster_id++;
+                }
+
+                out << node_id << "," << cluster_mapping[cluster_id] << "\n";
             }
 
             in.close();
-            start_cluster_id += (max_cluster_id + 1);
         }
     }
 

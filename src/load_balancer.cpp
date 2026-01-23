@@ -339,7 +339,7 @@ void LoadBalancer::run() {
     }
 
     // Aggregation phase: combine outputs from all workers
-    int start_cluster_id = 0;
+    int next_cluster_id = 0;
     std::string clusters_output_dir = work_dir + "/output/";
 
     fs::remove(output_file);
@@ -356,7 +356,8 @@ void LoadBalancer::run() {
         std::string line;
         std::getline(in, line);  // Skip header
 
-        int max_cluster_id = -1;
+        std::unordered_map<int, int> cluster_mapping;  // per-worker mapping
+
         while (std::getline(in, line)) {
             std::stringstream ss(line);
             std::string node_str, cluster_str;
@@ -365,15 +366,18 @@ void LoadBalancer::run() {
 
             int node_id = std::stoi(node_str);
             int cluster_id = std::stoi(cluster_str);
-            max_cluster_id = std::max(max_cluster_id, cluster_id);
 
-            out << node_id << "," << (cluster_id + start_cluster_id) << "\n";
+            // Assign new global ID if this cluster_id hasn't been seen in this worker's output
+            if (cluster_mapping.find(cluster_id) == cluster_mapping.end()) {
+                cluster_mapping[cluster_id] = next_cluster_id++;
+            }
+
+            out << node_id << "," << cluster_mapping[cluster_id] << "\n";
         }
 
         in.close();
         out.flush();
 
-        start_cluster_id += (max_cluster_id + 1);
         logger.info("Scanned worker " + std::to_string(worker_rank) + " output.");
     }
 
