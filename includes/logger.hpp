@@ -18,12 +18,14 @@ private:
     std::chrono::steady_clock::time_point start_time;
     int num_calls_to_log_write;
     bool enabled;
+    std::ios_base::openmode mode;
 
 public:
-    Logger(std::string log_file, LogLevel level)
-        : log_level(level), num_calls_to_log_write(0), enabled(true) {
+    Logger(std::string log_file, LogLevel level,
+           std::ios_base::openmode mode = std::ios_base::app)
+        : log_level(level), num_calls_to_log_write(0), enabled(true), mode(mode) {
         start_time = std::chrono::steady_clock::now();
-        log_file_handle.open(log_file);
+        log_file_handle.open(log_file, mode);
         if (!log_file_handle.is_open()) {
             std::cerr << "[WARNING] Failed to open log file: " << log_file << std::endl;
             enabled = false;
@@ -32,8 +34,9 @@ public:
 
     // Constructor accepting int log level (for compatibility with existing code)
     // int: -1 = ERROR, 0 = INFO, 1+ = DEBUG
-    Logger(std::string log_file, int level)
-        : num_calls_to_log_write(0), enabled(true) {
+    Logger(std::string log_file, int level,
+           std::ios_base::openmode mode = std::ios_base::app)
+        : num_calls_to_log_write(0), enabled(true), mode(mode) {
         // Convert int to LogLevel
         if (level >= 1) {
             log_level = LogLevel::DEBUG;
@@ -44,7 +47,7 @@ public:
         }
 
         start_time = std::chrono::steady_clock::now();
-        log_file_handle.open(log_file);
+        log_file_handle.open(log_file, mode);
         if (!log_file_handle.is_open()) {
             std::cerr << "[WARNING] Failed to open log file: " << log_file << std::endl;
             enabled = false;

@@ -51,6 +51,8 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
     if (!load_checkpoint()) // attempt to load existing progress first
         initialize_job_queue(created_clusters);
 
+    // TODO: if we load a checkpoint and discovers that there are no jobs left, we should check if the aggregation is also completed - which means no job will be ran
+
     logger.info("LoadBalancer initialization complete");
 }
 
@@ -387,6 +389,12 @@ void LoadBalancer::run() {
 
     logger.info("Program-level output aggregation completed.");
     logger.info("LoadBalancer runtime phase ended");
+
+    std::string checkpoint_file = work_dir + "/checkpoint.csv";
+    if (fs::exists(checkpoint_file)) {
+        fs::remove(checkpoint_file);
+        logger.info("Checkpoint file removed");
+    }
 }
 
 // Estimate the cost of a cluster
