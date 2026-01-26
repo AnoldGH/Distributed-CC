@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <queue>
+#include <unordered_map>
 
 // Records information of clusters to be assigned. Used to estimate cost and determine priority, etc.
 struct ClusterInfo {
@@ -18,7 +19,8 @@ private:
     std::string output_file;
     bool use_rank_0_worker;
     float min_batch_cost;
-    std::vector<ClusterInfo> unprocessed_clusters;  // Vector of unprocessed clusters
+    std::vector<ClusterInfo> unprocessed_clusters;              // Vector of unprocessed clusters
+    std::unordered_map<int, ClusterInfo> in_flight_clusters;    // Clusters that are assigned but not yet completed - map for quicker lookup
 
     /**
      * Partition clustering into separate cluster files
@@ -41,6 +43,9 @@ private:
     void initialize_job_queue(const std::vector<ClusterInfo>& created_clusters);
 
 public:
+    void save_checkpoint(); // save checkpoint - usually due to SIGTERM
+    bool load_checkpoint(); // attempt to load checkpoint, return true if successful, or false if no checkpoint file exists
+
     /**
      * Constructor: Initialize load balancer
      * - Partitions the clustering into separate cluster files (or loads from pre-partitioned dir)

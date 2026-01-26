@@ -8,7 +8,6 @@
 #include <fstream>
 #include <filesystem>
 #include <stdexcept>
-
 namespace fs = std::filesystem;
 
 // Constructor
@@ -49,7 +48,8 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
     }
 
     // Phase 2: Initialize job queue from created cluster files
-    initialize_job_queue(created_clusters);
+    if (!load_checkpoint()) // attempt to load existing progress first
+        initialize_job_queue(created_clusters);
 
     logger.info("LoadBalancer initialization complete");
 }
@@ -303,6 +303,7 @@ void LoadBalancer::run() {
                     unprocessed_clusters.pop_back();
 
                     assign_clusters.push_back(cluster_info.cluster_id);
+                    in_flight_clusters[cluster_info.cluster_id] = cluster_info;  // keep track of assigned but not completed clusters
 
                     float cost = getCost(cluster_info.node_count, cluster_info.edge_count);
                     batch_cost += cost;
@@ -324,6 +325,9 @@ void LoadBalancer::run() {
             MPI_Send(assign_clusters.data(), assign_clusters.size(), MPI_INT, worker_rank, to_int(MessageType::DISTRIBUTE_WORK), MPI_COMM_WORLD);
         } else if (message_type == MessageType::WORK_DONE) {
             logger.info("Worker " + std::to_string(worker_rank) + " completed cluster " + std::to_string(message));
+
+            // Remove in-flight cluster
+            in_flight_clusters.erase(message);
 
             try {
                 fs::remove(work_dir + "/" + "pending" + "/" + std::to_string(message));
@@ -389,4 +393,49 @@ void LoadBalancer::run() {
 float LoadBalancer::getCost(int node_count, int edge_count) {
     float density = (2.0f * edge_count) / (node_count * (node_count - 1));
     return node_count + (1.0f / density);
+}
+
+// Save checkpoint - usually due to SIGTERM
+void LoadBalancer::save_checkpoint() {
+    std::string path = work_dir + "/checkpoint.csv";
+    std::string tmp_path = path + ".tmp";   // tmp file containing incomplete results
+    std::ofstream out(tmp_path);
+    out << "cluster_id,node_count,edge_count\n";
+    for (const auto& c : unprocessed_clusters)
+        out << c.cluster_id << "," << c.node_count << "," << c.edge_count << "\n";
+    for (const auto& [k, c] : in_flight_clusters)
+        out << c.cluster_id << "," << c.node_count << "," << c.edge_count << "\n";
+    out.close();
+    fs::rename(tmp_path, path);
+    logger.info("Checkpoint saved: " + std::to_string(unprocessed_clusters.size()) + " queued, "
+                + std::to_string(in_flight_clusters.size()) + " in-flight");
+}
+
+// Load checkpoint
+bool LoadBalancer::load_checkpoint() {
+    std::string path = work_dir + "/checkpoint.csv";
+    if (!fs::exists(path)) return false;
+
+    logger.info("Resuming from checkpoint: " + path);
+
+    unprocessed_clusters.clear();
+    std::ifstream in(path);
+    std::string line;
+    std::getline(in, line);
+    while (std::getline(in, line)) {
+        std::istringstream ss(line);
+        std::string cid, nc, ec;
+        std::getline(ss, cid, ',');
+        std::getline(ss, nc, ',');
+        std::getline(ss, ec, ',');
+        unprocessed_clusters.push_back({std::stoi(cid), std::stoi(nc), std::stoi(ec)});
+    }
+
+    std::sort(unprocessed_clusters.begin(), unprocessed_clusters.end(),
+        [this](const ClusterInfo& a, const ClusterInfo& b) {
+            return getCost(a.node_count, a.edge_count) < getCost(b.node_count, b.edge_count);
+        });
+
+    logger.info("Checkpoint loaded: " + std::to_string(unprocessed_clusters.size()) + " clusters to process");
+    return true;
 }

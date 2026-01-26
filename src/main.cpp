@@ -1,3 +1,4 @@
+#include <csignal>
 #include <iostream>
 #include <thread>
 #include <filesystem>
@@ -9,6 +10,14 @@
 #include <utils.hpp>
 
 namespace fs = std::filesystem; // for brevity
+
+// Signal handling
+LoadBalancer* global_lb_ptr = nullptr;
+void signal_handler(int signum) {
+    if (global_lb_ptr) {
+        global_lb_ptr->save_checkpoint();
+    }
+}
 
 int main(int argc, char** argv) {
     // Initialize MPI
@@ -179,6 +188,10 @@ int main(int argc, char** argv) {
 
                 // Initialize LoadBalancer (this partitions clustering and initializes job queue)
                 lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost);
+
+                // Signal handling - Slurm sends SIGTERM before SIGKILL a job
+                global_lb_ptr = lb.get();
+                std::signal(SIGTERM, signal_handler);   // register signal handler
 
                 if (partition_only) {
                     std::cerr << "Partition-only mode: won't start the load balancer" << std::endl;
