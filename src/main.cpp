@@ -17,6 +17,7 @@ void signal_handler(int signum) {
     if (global_lb_ptr) {
         global_lb_ptr->save_checkpoint();
     }
+    _exit(0);
 }
 
 int main(int argc, char** argv) {

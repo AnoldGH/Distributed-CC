@@ -391,10 +391,16 @@ void LoadBalancer::run() {
     logger.info("LoadBalancer runtime phase ended");
 
     std::string checkpoint_file = work_dir + "/checkpoint.csv";
-    if (fs::exists(checkpoint_file)) {
-        fs::remove(checkpoint_file);
-        logger.info("Checkpoint file removed");
+    if (in_flight_clusters.size() == 0) {   // all clusters are processed
+        if (fs::exists(checkpoint_file)) {
+            fs::remove(checkpoint_file);
+            logger.info("Checkpoint file removed");
+        }
+    } else {    // some clusters failed to be processed
+        logger.info("Saving checkpoint due to unfinished jobs: " + std::to_string(in_flight_clusters.size()) + " jobs remaining");
+        save_checkpoint();
     }
+
 }
 
 // Estimate the cost of a cluster
