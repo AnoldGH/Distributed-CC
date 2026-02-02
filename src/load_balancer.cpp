@@ -423,6 +423,7 @@ void LoadBalancer::save_checkpoint() {
     fs::rename(tmp_path, path);
     logger.info("Checkpoint saved: " + std::to_string(unprocessed_clusters.size()) + " queued, "
                 + std::to_string(in_flight_clusters.size()) + " in-flight");
+    logger.flush();  // Ensure log is written before the program is terminated
 }
 
 // Load checkpoint
