@@ -343,6 +343,8 @@ void LoadBalancer::run() {
             logger.info("Worker " + std::to_string(worker_rank) + " completed worker-level aggregation.");
             --active_workers;
         }
+
+        logger.flush(); // flush per assignment
     }
 
     // Aggregation phase: combine outputs from all workers
