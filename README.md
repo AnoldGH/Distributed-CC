@@ -2,6 +2,23 @@
 
 A distributed implementation of Connectivity Modifier (CM) using MPI for parallel processing of large-scale graph clustering.
 
+## Installation
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd distributed_CM
+
+# Fetch all git submodules
+git submodule update --init --recursive
+
+# Run setup script (installs dependencies)
+./setup.sh
+
+# Build and compile
+./easy_build_and_compile.sh
+```
+
 ## Usage
 
 ```bash
