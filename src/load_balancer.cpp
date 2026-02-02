@@ -54,6 +54,7 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
     // TODO: if we load a checkpoint and discovers that there are no jobs left, we should check if the aggregation is also completed - which means no job will be ran
 
     logger.info("LoadBalancer initialization complete");
+    logger.flush(); // flush when the program terminates normally
 }
 
 // Partition clustering into separate cluster files
