@@ -265,8 +265,8 @@ void LoadBalancer::initialize_job_queue(const std::vector<ClusterInfo>& created_
     // Since we pop from the back, we want most costly at the end.
     std::sort(unprocessed_clusters.begin(), unprocessed_clusters.end(),
         [this](const ClusterInfo& a, const ClusterInfo& b) {
-            float cost_a = getCost(a.node_count, a.edge_count);
-            float cost_b = getCost(b.node_count, b.edge_count);
+            float cost_a = get_cost(a.node_count, a.edge_count);
+            float cost_b = get_cost(b.node_count, b.edge_count);
             return cost_a < cost_b;  // Ascending order, so most costly is at the back
         });
 
@@ -308,7 +308,7 @@ void LoadBalancer::run() {
                     assign_clusters.push_back(cluster_info.cluster_id);
                     in_flight_clusters[cluster_info.cluster_id] = cluster_info;  // keep track of assigned but not completed clusters
 
-                    float cost = getCost(cluster_info.node_count, cluster_info.edge_count);
+                    float cost = get_cost(cluster_info.node_count, cluster_info.edge_count);
                     batch_cost += cost;
 
                     logger.info("Assigning cluster " + std::to_string(cluster_info.cluster_id) +
@@ -406,10 +406,15 @@ void LoadBalancer::run() {
 
 }
 
-// Estimate the cost of a cluster
-float LoadBalancer::getCost(int node_count, int edge_count) {
+// Estimate the cost of a cluster given node_count and edge_count
+float LoadBalancer::get_cost(int node_count, int edge_count) {
     float density = (2.0f * edge_count) / (node_count * (node_count - 1));
     return node_count + (1.0f / density);
+}
+
+// Estimate the cost of a cluster given cluster_info
+float LoadBalancer::get_cost(ClusterInfo& cluster_info) {
+    return get_cost(cluster_info.node_count, cluster_info.edge_count);
 }
 
 // Save checkpoint - usually due to SIGTERM
@@ -451,7 +456,7 @@ bool LoadBalancer::load_checkpoint() {
 
     std::sort(unprocessed_clusters.begin(), unprocessed_clusters.end(),
         [this](const ClusterInfo& a, const ClusterInfo& b) {
-            return getCost(a.node_count, a.edge_count) < getCost(b.node_count, b.edge_count);
+            return get_cost(a.node_count, a.edge_count) < get_cost(b.node_count, b.edge_count);
         });
 
     logger.info("Checkpoint loaded: " + std::to_string(unprocessed_clusters.size()) + " clusters to process");

@@ -71,5 +71,10 @@ public:
     /**
      * Estimate the cost of processing a cluster
      */
-    float getCost(int node_count, int edge_count);
+    float get_cost(int node_count, int edge_count);
+
+    /**
+     * Estimate the cost of processing a cluster given cluster_info
+     */
+    float get_cost(ClusterInfo& cluster_info);
 };
