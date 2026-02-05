@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
     bool partition_only;
     float min_batch_cost;
     int drop_cluster_under;
-    bool auto_accept_clique;
+    bool bypass_cluster;
 
     std::string algorithm;
     double clustering_parameter;
@@ -195,7 +195,7 @@ int main(int argc, char** argv) {
                 partition_only = cm.get<bool>("--partition-only");
                 min_batch_cost = cm.get<float>("--min-batch-cost");
                 drop_cluster_under = cm.get<int>("--drop-cluster-under");
-                auto_accept_clique = cm.get<bool>("--auto-accept-clique");
+                bypass_cluster = cm.get<bool>("--bypass-clique");
 
                 /**
                  * TODO: checkpointing
@@ -210,7 +210,7 @@ int main(int argc, char** argv) {
                 fs::create_directories(logs_clusters_dir);
 
                 // Initialize LoadBalancer (this partitions clustering and initializes job queue)
-                lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under, auto_accept_clique);
+                lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under, bypass_cluster);
 
                 // Signal handling - Slurm sends SIGTERM before SIGKILL a job
                 // Also handle SIGABRT for internal errors (e.g., memory corruption, assertion failures)
