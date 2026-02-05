@@ -61,6 +61,7 @@ int main(int argc, char** argv) {
     bool partition_only;
     float min_batch_cost;
     int drop_cluster_under;
+    bool auto_accept_clique;
 
     std::string algorithm;
     double clustering_parameter;
@@ -119,7 +120,7 @@ int main(int argc, char** argv) {
                 .default_value("1log_10(n)")
                 .help("String in the form of Clog_x(n) or Cn^x for well-connectedness");
             cm.add_argument("--prune")
-                .default_value(false) // default false, implicit true
+                .default_value(false)
                 .implicit_value(true) // default false, implicit true
                 .help("Whether to prune nodes using mincuts");
             cm.add_argument("--mincut-type")
@@ -150,6 +151,10 @@ int main(int argc, char** argv) {
                 .default_value(-1)
                 .help("Drop cluster with less than (strictly) specified number of nodes")
                 .scan<'d', int>();
+            cm.add_argument("--bypass-clique")
+                .default_value(false)
+                .implicit_value(true)
+                .help("The load balancer always accepts cliques, regardless of user-specific connectedness criterion");
 
             // TODO: support WCC in the future?
 
@@ -190,6 +195,7 @@ int main(int argc, char** argv) {
                 partition_only = cm.get<bool>("--partition-only");
                 min_batch_cost = cm.get<float>("--min-batch-cost");
                 drop_cluster_under = cm.get<int>("--drop-cluster-under");
+                auto_accept_clique = cm.get<bool>("--auto-accept-clique");
 
                 /**
                  * TODO: checkpointing
@@ -204,7 +210,7 @@ int main(int argc, char** argv) {
                 fs::create_directories(logs_clusters_dir);
 
                 // Initialize LoadBalancer (this partitions clustering and initializes job queue)
-                lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under);
+                lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under, auto_accept_clique);
 
                 // Signal handling - Slurm sends SIGTERM before SIGKILL a job
                 // Also handle SIGABRT for internal errors (e.g., memory corruption, assertion failures)

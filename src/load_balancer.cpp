@@ -27,7 +27,8 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
       output_file(output_file),
       use_rank_0_worker(use_rank_0_worker),
       min_batch_cost(min_batch_cost),
-      drop_cluster_under(drop_cluster_under) {
+      drop_cluster_under(drop_cluster_under),
+      auto_accept_clique(auto_accept_clique) {
 
     const std::string clusters_dir = work_dir + "/" + "clusters";
     std::string summary_filename = partitioned_clusters_dir + "/summary.csv";
@@ -58,6 +59,42 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
 
     logger.info("LoadBalancer initialization complete");
     logger.flush(); // flush when the program terminates normally
+}
+
+/** Helper methods */
+bool is_clique(int node_count, int edge_count) {
+    return ((node_count * (node_count - 1)) / 2) == edge_count;
+}
+
+bool is_clique(ClusterInfo& cluster_info) {
+    return is_clique(cluster_info.node_count, cluster_info.edge_count);
+}
+
+// Bypass a cluster - write it directly to output without processing
+void LoadBalancer::bypass_cluster(const ClusterInfo& cluster_info, const std::set<int>& nodes) {
+    fs::create_directories(work_dir + "/output");
+
+    std::string filename = work_dir + "/output/bypass.out";
+    bool file_exists = fs::exists(filename);
+
+    std::ofstream out(filename, std::ios::app);
+
+    if (!out.is_open()) {
+        logger.error("Failed to create bypass output file: " + filename);
+        throw std::runtime_error("Failed to create bypass output file: " + filename);
+    }
+
+    if (!file_exists) {
+        out << "node_id,cluster_id\n";
+    }
+
+    for (const int node : nodes) {
+        out << node << "," << cluster_info.cluster_id << "\n";
+    }
+    out.close();
+
+    logger.info("Bypassed cluster " + std::to_string(cluster_info.cluster_id) +
+                " (nodes=" + std::to_string(cluster_info.node_count) + ")");
 }
 
 // Partition clustering into separate cluster files
@@ -175,6 +212,13 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
     int files_written = 0;
     for (auto& [cluster_id, cluster_info] : clusters) {
         int edge_count = cluster_edges[cluster_id].size();
+
+        // Clique bypass
+        if (auto_accept_clique && is_clique(cluster_info)) {
+            bypass_cluster(cluster_info, cluster_to_node[cluster_id]);
+            continue;
+        }
+
         if (edge_count == 0 || cluster_info.node_count < drop_cluster_under) {
             continue;  // cluster is completely disconnected, pass
         }
@@ -358,17 +402,15 @@ void LoadBalancer::run() {
     std::ofstream out(output_file, std::ios::app);
     out << "node_id,cluster_id\n";
 
-    int first_worker = use_rank_0_worker ? 0 : 1;
-    for (int worker_rank = first_worker; worker_rank < size; ++worker_rank) {
-        std::string worker_output_file = clusters_output_dir + "worker_" + std::to_string(worker_rank) + ".out";
-
-        // Aggregation logic
-        std::ifstream in(worker_output_file);
+    // Helper lambda for aggregating a single output file
+    auto aggregate_file = [&](const std::string& filepath, const std::string& source_name) {
+        std::ifstream in(filepath);
+        if (!in.is_open()) return;
 
         std::string line;
         std::getline(in, line);  // Skip header
 
-        std::unordered_map<int, int> cluster_mapping;  // per-worker mapping
+        std::unordered_map<int, int> cluster_mapping;  // per-file mapping
 
         while (std::getline(in, line)) {
             std::stringstream ss(line);
@@ -379,7 +421,7 @@ void LoadBalancer::run() {
             int node_id = std::stoi(node_str);
             int cluster_id = std::stoi(cluster_str);
 
-            // Assign new global ID if this cluster_id hasn't been seen in this worker's output
+            // Assign new global ID if this cluster_id hasn't been seen in this file's output
             if (cluster_mapping.find(cluster_id) == cluster_mapping.end()) {
                 cluster_mapping[cluster_id] = next_cluster_id++;
             }
@@ -390,7 +432,18 @@ void LoadBalancer::run() {
         in.close();
         out.flush();
 
-        logger.info("Scanned worker " + std::to_string(worker_rank) + " output.");
+        logger.info("Scanned " + source_name + " output.");
+    };
+
+    // Aggregate bypass file
+    std::string bypass_file = clusters_output_dir + "bypass.out";
+    aggregate_file(bypass_file, "bypass");
+
+    // Aggregate worker outputs
+    int first_worker = use_rank_0_worker ? 0 : 1;
+    for (int worker_rank = first_worker; worker_rank < size; ++worker_rank) {
+        std::string worker_output_file = clusters_output_dir + "worker_" + std::to_string(worker_rank) + ".out";
+        aggregate_file(worker_output_file, "worker " + std::to_string(worker_rank));
     }
 
     logger.info("Program-level output aggregation completed.");

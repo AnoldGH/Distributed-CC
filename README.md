@@ -51,6 +51,15 @@ mpirun -np <num_processes> ./distributed-constrained-clustering CM [OPTIONS]
 | `--partition-only` | `false` | Stop after partitioning (Phase 1) without launching computation jobs. Useful for preparing clusters for later processing. |
 | `--min-batch-cost <value>` | `1.0` | Minimum total estimated cost per batch when assigning clusters to workers. Higher values mean more clusters per batch, reducing communication overhead. |
 
+### Finer Control Arguments
+
+These arguments are reserved for expert users. They control subtle behaviors of Distributed CM that may conflict with other arguments. Use with caution.
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--drop-cluster-under <n>` | `-1` | Drop clusters with fewer than `n` nodes during partitioning. `-1` means no filtering. |
+| `--bypass-clique` | `false` | Automatically accept cliques without CM processing, regardless of the connectedness criterion. Bypassed clusters are written directly to output. |
+
 ## Examples
 
 ### Basic Usage
@@ -152,7 +161,8 @@ To resume from a checkpoint, simply re-run the program with the same `--work-dir
 │   └── clusters/           # Per-cluster CM logs
 ├── output/
 │   ├── worker_<rank>/      # Per-worker output files
-│   └── worker_<rank>.out   # Aggregated worker output
+│   ├── worker_<rank>.out   # Aggregated worker output
+│   └── bypass.out          # Bypassed clusters (e.g., cliques)
 ├── history/                # CM history files
 └── pending/                # Pending cluster markers
 ```

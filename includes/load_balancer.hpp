@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <queue>
+#include <set>
 #include <unordered_map>
 
 // Records information of clusters to be assigned. Used to estimate cost and determine priority, etc.
@@ -20,6 +21,7 @@ private:
     bool use_rank_0_worker;
     float min_batch_cost;
     int drop_cluster_under;
+    bool auto_accept_clique;
     std::vector<ClusterInfo> unprocessed_clusters;              // Vector of unprocessed clusters
     std::unordered_map<int, ClusterInfo> in_flight_clusters;    // Clusters that are assigned but not yet completed - map for quicker lookup
 
@@ -42,6 +44,12 @@ private:
      * Initialize job queue from created clusters
      */
     void initialize_job_queue(const std::vector<ClusterInfo>& created_clusters);
+
+    /**
+     * Bypass a cluster - write it directly to output without processing
+     * Used for clusters that don't need CM processing (e.g., cliques)
+     */
+    void bypass_cluster(const ClusterInfo& cluster_info, const std::set<int>& nodes);
 
 public:
     void save_checkpoint(); // save checkpoint - usually due to SIGTERM
