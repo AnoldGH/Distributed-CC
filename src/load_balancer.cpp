@@ -210,6 +210,15 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
     // Write out cluster files to output_dir
     logger.info("Writing cluster files to " + output_dir);
     int files_written = 0;
+
+    // Forming batch
+    float current_batch_cost = 0;   // culmulative cost of the current batch
+    bool forming_batch = true;   // whether we are forming a new batch this iteration
+    std::string current_batch_edgelist = "";
+    std::string current_batch_cluster = "";
+    std::ofstream current_batch_edgelist_out;
+    std::ofstream current_batch_cluster_out;
+
     for (auto& [cluster_id, cluster_info] : clusters) {
         int edge_count = cluster_edges[cluster_id].size();
 
@@ -224,10 +233,28 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
         }
         cluster_info.edge_count = edge_count;
 
+        if (forming_batch) {
+            current_batch_edgelist = output_dir + "/" + std::to_string(cluster_id) + ".edgelist";   // use the first encountered cluster id as batch id
+            current_batch_cluster = output_dir + "/" + std::to_string(cluster_id) + ".cluster";
+
+            current_batch_edgelist_out.open(current_batch_edgelist);
+            current_batch_cluster_out.open(current_batch_cluster);
+
+            current_batch_edgelist_out << "source,target\n";
+            current_batch_cluster_out << "node_id,cluster_id\n";
+        }
+
         std::string filename = output_dir + "/" + std::to_string(cluster_id) + ".edgelist";
         std::string cluster_filename = output_dir + "/" + std::to_string(cluster_id) + ".cluster";
         std::ofstream out(filename);
         std::ofstream cluster_out(cluster_filename);
+
+        float estimated_cost = get_cost(cluster_info);  // estimated cluster cost
+        current_batch_cost += estimated_cost;
+        if (current_batch_cost > min_batch_cost) {  // if the batch is large enough, finish writing
+            current_batch_edgelist_out.close();
+            current_batch_cluster_out.close();
+        }
 
         if (!out.is_open()) {
             logger.error("Failed to create output file: " + filename);
