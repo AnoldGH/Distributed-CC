@@ -19,12 +19,15 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
                           bool use_rank_0_worker,
                           const std::string& partitioned_clusters_dir,
                           bool partition_only,
-                          float min_batch_cost)
+                          float min_batch_cost,
+                          int drop_cluster_under,
+                          bool auto_accept_clique)
     : logger(work_dir + "/logs/load_balancer.log", log_level),
       work_dir(work_dir),
       output_file(output_file),
       use_rank_0_worker(use_rank_0_worker),
-      min_batch_cost(min_batch_cost) {
+      min_batch_cost(min_batch_cost),
+      drop_cluster_under(drop_cluster_under) {
 
     const std::string clusters_dir = work_dir + "/" + "clusters";
     std::string summary_filename = partitioned_clusters_dir + "/summary.csv";
@@ -172,7 +175,7 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
     int files_written = 0;
     for (auto& [cluster_id, cluster_info] : clusters) {
         int edge_count = cluster_edges[cluster_id].size();
-        if (edge_count == 0) {
+        if (edge_count == 0 || cluster_info.node_count < drop_cluster_under) {
             continue;  // cluster is completely disconnected, pass
         }
         cluster_info.edge_count = edge_count;

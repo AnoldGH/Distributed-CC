@@ -19,6 +19,7 @@ private:
     std::string output_file;
     bool use_rank_0_worker;
     float min_batch_cost;
+    int drop_cluster_under;
     std::vector<ClusterInfo> unprocessed_clusters;              // Vector of unprocessed clusters
     std::unordered_map<int, ClusterInfo> in_flight_clusters;    // Clusters that are assigned but not yet completed - map for quicker lookup
 
@@ -60,7 +61,9 @@ public:
                 bool use_rank_0_worker,
                 const std::string& partitioned_clusters_dir = "",
                 bool partition_only = false,
-                float min_batch_cost = 200);
+                float min_batch_cost = 200,
+                int drop_cluster_under = -1,
+                bool auto_accept_clique = false);
 
     /**
      * Runtime phase: Distribute jobs to workers
