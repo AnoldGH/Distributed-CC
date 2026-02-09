@@ -24,12 +24,14 @@ Worker::Worker(const std::string& method, Logger& logger, const std::string& wor
                const std::string& algorithm, double clustering_parameter,
                int log_level, const std::string& connectedness_criterion,
                const std::string& mincut_type, bool prune,
-               int time_limit_per_cluster)
+               int time_limit_per_cluster,
+               int report_interval)
     : method(method), logger(logger), work_dir(work_dir), clusters_dir(clusters_dir),
       algorithm(algorithm), clustering_parameter(clustering_parameter),
       log_level(log_level), connectedness_criterion(connectedness_criterion),
       mincut_type(mincut_type), prune(prune),
-      time_limit_per_cluster(time_limit_per_cluster) {}
+      time_limit_per_cluster(time_limit_per_cluster),
+      report_interval(report_interval) {}
 
 // Main run function
 void Worker::run() {
@@ -50,8 +52,8 @@ void Worker::run() {
         int request_msg = to_int(MessageType::WORK_REQUEST);
         MPI_Send(&request_msg, 1, MPI_INT, 0, to_int(MessageType::WORK_REQUEST), MPI_COMM_WORLD);
 
-        // Send cumulative report every 10 requests (best-effort)
-        if (++request_count % 10 == 0) {
+        // Send cumulative report periodically (best-effort)
+        if (report_interval > 0 && ++request_count % report_interval == 0) {
             int report_data[3] = {report.oom_count, report.timeout_count, report.peak_memory_mb};
             MPI_Send(report_data, 3, MPI_INT, 0, to_int(MessageType::WORKER_REPORT), MPI_COMM_WORLD);
         }
@@ -93,7 +95,7 @@ void Worker::run() {
     }
 
     // Send final report before aggregation
-    {
+    if (report_interval > 0) {
         int report_data[3] = {report.oom_count, report.timeout_count, report.peak_memory_mb};
         MPI_Send(report_data, 3, MPI_INT, 0, to_int(MessageType::WORKER_REPORT), MPI_COMM_WORLD);
     }

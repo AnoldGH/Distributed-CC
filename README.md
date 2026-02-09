@@ -56,6 +56,7 @@ mpirun -np <num_processes> ./distributed-constrained-clustering WCC [OPTIONS]
 | `--partitioned-clusters-dir <path>` | `<work-dir>/clusters` | Path to pre-partitioned clusters directory. If provided with a valid `summary.csv`, skips the partitioning phase. |
 | `--partition-only` | `false` | Stop after partitioning (Phase 1) without launching computation jobs. Useful for preparing clusters for later processing. |
 | `--min-batch-cost <value>` | `1.0` | Minimum total estimated cost per batch when assigning clusters to workers. Higher values mean more clusters per batch, reducing communication overhead. |
+| `--report-interval <n>` | `10` | Workers send status reports (OOM count, timeout count, peak memory) to the load balancer every `n` work requests. `-1` disables reporting. |
 
 #### Finer Control Arguments
 

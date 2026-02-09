@@ -478,14 +478,18 @@ void LoadBalancer::run() {
     logger.info("Program-level output aggregation completed.");
 
     // Log worker report summary
-    int total_oom = 0, total_timeout = 0, global_peak_mb = 0;
-    for (const auto& [rank, r] : worker_reports) {
-        total_oom += r.oom_count;
-        total_timeout += r.timeout_count;
-        if (r.peak_memory_mb > global_peak_mb) global_peak_mb = r.peak_memory_mb;
+    if (worker_reports.empty()) {
+        logger.info("Worker report summary: no reports received (worker reporting may be disabled)");
+    } else {
+        int total_oom = 0, total_timeout = 0, global_peak_mb = 0;
+        for (const auto& [rank, r] : worker_reports) {
+            total_oom += r.oom_count;
+            total_timeout += r.timeout_count;
+            if (r.peak_memory_mb > global_peak_mb) global_peak_mb = r.peak_memory_mb;
+        }
+        logger.info("Worker report summary: " + std::to_string(total_oom) + " OOM kills, "
+                    + std::to_string(total_timeout) + " timeouts, peak cluster memory " + std::to_string(global_peak_mb) + " MB");
     }
-    logger.info("Worker report summary: " + std::to_string(total_oom) + " OOM kills, "
-                + std::to_string(total_timeout) + " timeouts, peak cluster memory " + std::to_string(global_peak_mb) + " MB");
 
     logger.info("LoadBalancer runtime phase ended");
 
