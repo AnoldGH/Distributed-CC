@@ -2,6 +2,7 @@
 #include <worker.hpp>
 #include <constants.hpp>
 #include <cm.h>
+#include <mincut_only.h>
 #include <constrained.h>
 
 #include <atomic>
@@ -18,13 +19,13 @@
 namespace fs = std::filesystem;
 
 // Constructor
-Worker::Worker(Logger& logger, const std::string& work_dir,
+Worker::Worker(const std::string& method, Logger& logger, const std::string& work_dir,
                const std::string& clusters_dir,
                const std::string& algorithm, double clustering_parameter,
                int log_level, const std::string& connectedness_criterion,
                const std::string& mincut_type, bool prune,
                int time_limit_per_cluster)
-    : logger(logger), work_dir(work_dir), clusters_dir(clusters_dir),
+    : method(method), logger(logger), work_dir(work_dir), clusters_dir(clusters_dir),
       algorithm(algorithm), clustering_parameter(clustering_parameter),
       log_level(log_level), connectedness_criterion(connectedness_criterion),
       mincut_type(mincut_type), prune(prune),
@@ -172,14 +173,20 @@ bool Worker::process_cluster(int cluster_id) {
     if (pid == 0) {  // child process
         logger.info("Child process starts on cluster " + std::to_string(cluster_id));
 
-        // TODO: CM logic
+        // Output file paths
         std::string output_file = work_dir + "/output/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".output";
         std::string history_file = work_dir + "/history/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".hist";
         std::string log_file = work_dir + "/logs/clusters/" + std::to_string(cluster_id) + ".log"; // TODO: since CC was built as a standalone app with its own logging system, we have to use a different file. In the future we should try to integrate the two systems into one unified logging system.
 
-        ConstrainedClustering* connectivity_modifier = new CM(cluster_edgelist, this->algorithm, this->clustering_parameter, cluster_clustering_file, 1, output_file, log_file, history_file, this->log_level, this->connectedness_criterion, this->prune, this->mincut_type);
+        // CM or WCC
+        ConstrainedClustering* cc;
+        if (method == "CM") {
+            cc = new CM(cluster_edgelist, this->algorithm, this->clustering_parameter, cluster_clustering_file, 1, output_file, log_file, history_file, this->log_level, this->connectedness_criterion, this->prune, this->mincut_type);
+        } else if (method == "WCC") {
+            cc = new MincutOnly(cluster_edgelist, cluster_clustering_file, 1, output_file, log_file, this->log_level, this->connectedness_criterion, this->mincut_type);
+        }
 
-        connectivity_modifier->main();  // run CM
+        cc->main();  // run constrained clustering
 
         logger.info("Child process finishes cluster " + std::to_string(cluster_id));
         _exit(0);   // use _exit to avoid static destructor issues in forked process

@@ -11,7 +11,8 @@
 namespace fs = std::filesystem;
 
 // Constructor
-LoadBalancer::LoadBalancer(const std::string& edgelist,
+LoadBalancer::LoadBalancer(const std::string& method,
+                          const std::string& edgelist,
                           const std::string& cluster_file,
                           const std::string& work_dir,
                           const std::string& output_file,
@@ -22,7 +23,8 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
                           float min_batch_cost,
                           int drop_cluster_under,
                           bool auto_accept_clique)
-    : logger(work_dir + "/logs/load_balancer.log", log_level),
+    : method(method),
+      logger(work_dir + "/logs/load_balancer.log", log_level),
       work_dir(work_dir),
       output_file(output_file),
       use_rank_0_worker(use_rank_0_worker),
@@ -34,6 +36,18 @@ LoadBalancer::LoadBalancer(const std::string& edgelist,
     std::string summary_filename = partitioned_clusters_dir + "/summary.csv";
 
     logger.info("LoadBalancer initialization starting");
+    logger.info("Method: " + method);
+    logger.info("Edgelist: " + edgelist);
+    logger.info("Cluster file: " + cluster_file);
+    logger.info("Work dir: " + work_dir);
+    logger.info("Output file: " + output_file);
+    logger.info("Log level: " + std::to_string(log_level));
+    logger.info("Use rank 0 worker: " + std::string(use_rank_0_worker ? "true" : "false"));
+    logger.info("Partitioned clusters dir: " + partitioned_clusters_dir);
+    logger.info("Partition only: " + std::string(partition_only ? "true" : "false"));
+    logger.info("Min batch cost: " + std::to_string(min_batch_cost));
+    logger.info("Drop cluster under: " + std::to_string(drop_cluster_under));
+    logger.info("Auto accept clique: " + std::string(auto_accept_clique ? "true" : "false"));
 
     std::vector<ClusterInfo> created_clusters;
 

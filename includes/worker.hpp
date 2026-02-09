@@ -5,6 +5,7 @@
 
 class Worker {
 private:
+    std::string method;  // "CM" or "WCC"
     Logger& logger;
     std::string work_dir;
     std::string clusters_dir;
@@ -23,7 +24,7 @@ private:
     bool process_cluster(int cluster_id);
 
 public:
-    Worker(Logger& logger, const std::string& work_dir,
+    Worker(const std::string& method, Logger& logger, const std::string& work_dir,
            const std::string& clusters_dir,
            const std::string& algorithm, double clustering_parameter,
            int log_level, const std::string& connectedness_criterion,

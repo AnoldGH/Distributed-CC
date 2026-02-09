@@ -15,6 +15,7 @@ struct ClusterInfo {
 
 class LoadBalancer {
 private:
+    std::string method;  // "CM" or "WCC"
     Logger logger;
     std::string work_dir;
     std::string output_file;
@@ -61,7 +62,8 @@ public:
      * - Initializes the job queue
      * This runs synchronously on rank 0 before any workers start
      */
-    LoadBalancer(const std::string& edgelist,
+    LoadBalancer(const std::string& method,
+                const std::string& edgelist,
                 const std::string& cluster_file,
                 const std::string& work_dir,
                 const std::string& output_file,

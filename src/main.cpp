@@ -49,6 +49,7 @@ int main(int argc, char** argv) {
     std::thread lb_thread; // Load balancer thread (only used by rank 0)
 
     // Declarations
+    std::string method;  // "CM" or "WCC"
     std::string edgelist;
     std::string existing_clustering;
     std::string output_file;
@@ -77,13 +78,73 @@ int main(int argc, char** argv) {
     try {
         if (rank == 0) {
             argparse::ArgumentParser main_program("distributed-constrained-clustering");
-            argparse::ArgumentParser cm("CM");
-            cm.add_description("CM");
+            argparse::ArgumentParser common("Common");
 
-            /* CM arguments */
-            cm.add_argument("--edgelist")
+            /** Common Arguments */
+            common.add_argument("--edgelist")
                 .required()
                 .help("Network edge-list file");
+            common.add_argument("--existing-clustering")
+                .required() // NOTE: for first version of distributed CC, clustering is required
+                .help("Existing clustering file");
+            common.add_argument("--output-file")
+                .required()
+                .help("Output clustering file");
+            common.add_argument("--work-dir")
+                .default_value("dcm-work-dir")
+                .help("Directory to store intermediate results. Can be used to restore progress.");
+            common.add_argument("--log-level")
+                .default_value(int(1))
+                .help("Log level where 0 = silent, 1 = info, 2 = verbose")
+                .scan<'d', int>();
+            common.add_argument("--connectedness-criterion")
+                .default_value("1log_10(n)")
+                .help("String in the form of Clog_x(n) or Cn^x for well-connectedness");
+            common.add_argument("--prune")
+                .default_value(false)
+                .implicit_value(true) // default false, implicit true
+                .help("Whether to prune nodes using mincuts");
+            common.add_argument("--mincut-type")
+                .default_value("cactus")
+                .help("Mincut type used (cactus or noi)");
+
+            /** Control Arguments */
+            common.add_argument("--time-limit-per-cluster")
+                .default_value(int(-1))
+                .help("Time limit in seconds for each cluster (-1 = no limit)")
+                .scan<'d', int>();
+            common.add_argument("--partitioned-clusters-dir")
+                .default_value(std::string(""))
+                .help("Path to pre-partitioned clusters directory (skips partitioning if provided)");
+            common.add_argument("--partition-only")
+                .default_value(false)
+                .implicit_value(true)
+                .help("Stop after partitioning (Phase 1) without launching computation jobs");
+            common.add_argument("--min-batch-cost")
+                .default_value(float(1))
+                .help("Minimum total cost per batch when assigning clusters to workers")
+                .scan<'f', float>();
+
+            /**
+             * Finer control arguments
+             * These are reserved for expert users. They decide some subtle behaviors of Dist CM, which may conflict with other arguments. Use with caution.
+             * Default values for these arguments result in most general, consistent behaviors
+             */
+            common.add_argument("--drop-cluster-under")
+                .default_value(-1)
+                .help("Drop cluster with less than (strictly) specified number of nodes")
+                .scan<'d', int>();
+            common.add_argument("--bypass-clique")
+                .default_value(false)
+                .implicit_value(true)
+                .help("The load balancer always accepts cliques, regardless of user-specific connectedness criterion");
+
+            /** CM arguments */
+            argparse::ArgumentParser cm("CM");
+            cm.add_description("CM");
+            cm.add_parents(common);
+
+            // CM specific arguments
             cm.add_argument("--algorithm")
                 .help("Clustering algorithm to be used (leiden-cpm, leiden-mod, louvain)")
                 .action([](const std::string& value) {
@@ -97,68 +158,16 @@ int main(int argc, char** argv) {
                 .default_value(double(0.01))
                 .help("Clustering parameter e.g., 0.01 for Leiden-CPM")
                 .scan<'f', double>();
-            cm.add_argument("--existing-clustering")
-                .required() // NOTE: for first version of distributed CM, clustering is required
-                .help("Existing clustering file");
-            cm.add_argument("--output-file")
-                .required()
-                .help("Output clustering file");
-            cm.add_argument("--work-dir")
-                .default_value("dcm-work-dir")
-                .help("Directory to store intermediate results. Can be used to restore progress.");
 
-            /* Each rank handles its own log */
-            // cm.add_argument("--log-file")
-            //     .required()
-            //     .help("Output log file");
+            // TODO: support WCC
+            argparse::ArgumentParser wcc("WCC");
+            wcc.add_description("WCC");
+            wcc.add_parents(common);
 
-            cm.add_argument("--log-level")
-                .default_value(int(1))
-                .help("Log level where 0 = silent, 1 = info, 2 = verbose")
-                .scan<'d', int>();
-            cm.add_argument("--connectedness-criterion")
-                .default_value("1log_10(n)")
-                .help("String in the form of Clog_x(n) or Cn^x for well-connectedness");
-            cm.add_argument("--prune")
-                .default_value(false)
-                .implicit_value(true) // default false, implicit true
-                .help("Whether to prune nodes using mincuts");
-            cm.add_argument("--mincut-type")
-                .default_value("cactus")
-                .help("Mincut type used (cactus or noi)");
-            cm.add_argument("--time-limit-per-cluster")
-                .default_value(int(-1))
-                .help("Time limit in seconds for each cluster (-1 = no limit)")
-                .scan<'d', int>();
-            cm.add_argument("--partitioned-clusters-dir")
-                .default_value(std::string(""))
-                .help("Path to pre-partitioned clusters directory (skips partitioning if provided)");
-            cm.add_argument("--partition-only")
-                .default_value(false)
-                .implicit_value(true)
-                .help("Stop after partitioning (Phase 1) without launching computation jobs");
-            cm.add_argument("--min-batch-cost")
-                .default_value(float(1))
-                .help("Minimum total cost per batch when assigning clusters to workers")
-                .scan<'f', float>();
-
-            /**
-             * Finer control arguments
-             * These are reserved for expert users. They decide some subtle behaviors of Dist CM, which may conflict with other arguments. Use with caution.
-             * Default values for these arguments result in most general, consistent behaviors
-             */
-            cm.add_argument("--drop-cluster-under")
-                .default_value(-1)
-                .help("Drop cluster with less than (strictly) specified number of nodes")
-                .scan<'d', int>();
-            cm.add_argument("--bypass-clique")
-                .default_value(false)
-                .implicit_value(true)
-                .help("The load balancer always accepts cliques, regardless of user-specific connectedness criterion");
-
-            // TODO: support WCC in the future?
+            // WCC specific arguments
 
             main_program.add_subparser(cm);
+            main_program.add_subparser(wcc);
 
             try {
                 main_program.parse_args(argc, argv);
@@ -171,13 +180,13 @@ int main(int argc, char** argv) {
             std::cerr << "Arguments parsed" << std::endl;
 
             if (main_program.is_subcommand_used(cm)) {
+                method = "CM";
                 edgelist = cm.get<std::string>("--edgelist");
                 algorithm = cm.get<std::string>("--algorithm");
                 clustering_parameter = cm.get<double>("--clustering-parameter");
                 existing_clustering = cm.get<std::string>("--existing-clustering");
                 output_file = cm.get<std::string>("--output-file");
                 work_dir = cm.get<std::string>("--work-dir");
-                // std::string log_file = cm.get<std::string>("--log-file");
                 log_level = cm.get<int>("--log-level") - 1; // so that enum is cleaner
                 connectedness_criterion = cm.get<std::string>("--connectedness-criterion");
                 prune = false;
@@ -197,10 +206,52 @@ int main(int argc, char** argv) {
                 drop_cluster_under = cm.get<int>("--drop-cluster-under");
                 bypass_cluster = cm.get<bool>("--bypass-clique");
 
-                /**
-                 * TODO: checkpointing
-                 * We want to check if there is existing progress, and if so we should restore them.
-                 */
+                // Ensure work-dir and sub-dir's exist
+                clusters_dir = work_dir + "/" + "clusters";
+                logs_dir = work_dir + "/" + "logs";
+                logs_clusters_dir = logs_dir + "/" + "clusters";
+                fs::create_directories(clusters_dir);
+                fs::create_directories(logs_clusters_dir);
+
+                // Initialize LoadBalancer (this partitions clustering and initializes job queue)
+                lb = std::make_unique<LoadBalancer>(method, edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under, bypass_cluster);
+
+                // Signal handling - Slurm sends SIGTERM before SIGKILL a job
+                // Also handle SIGABRT for internal errors (e.g., memory corruption, assertion failures)
+                global_lb_ptr = lb.get();
+                std::signal(SIGTERM, signal_handler);   // register signal handler
+                std::signal(SIGABRT, signal_handler);   // save checkpoint on abort (e.g., free() errors)
+
+                if (partition_only) {
+                    std::cerr << "Partition-only mode: won't start the load balancer" << std::endl;
+                } else {
+                    // Spawn thread for runtime phase (job distribution)
+                    lb_thread = std::thread(&LoadBalancer::run, lb.get());
+                }
+            } else if (main_program.is_subcommand_used(wcc)) {
+                method = "WCC";
+                edgelist = wcc.get<std::string>("--edgelist");
+                existing_clustering = wcc.get<std::string>("--existing-clustering");
+                output_file = wcc.get<std::string>("--output-file");
+                work_dir = wcc.get<std::string>("--work-dir");
+                log_level = wcc.get<int>("--log-level") - 1; // so that enum is cleaner
+                connectedness_criterion = wcc.get<std::string>("--connectedness-criterion");
+                prune = false;
+                if (wcc["--prune"] == true) {
+                    prune = true;
+                    std::cerr << "pruning" << std::endl;
+                }
+                mincut_type = wcc.get<std::string>("--mincut-type");
+                time_limit_per_cluster = wcc.get<int>("--time-limit-per-cluster");
+                partitioned_clusters_dir = wcc.get<std::string>("--partitioned-clusters-dir");
+                if (partitioned_clusters_dir == "") {   // default: use work-dir clusters
+                    partitioned_clusters_dir = work_dir + "/clusters";
+                }
+
+                partition_only = wcc.get<bool>("--partition-only");
+                min_batch_cost = wcc.get<float>("--min-batch-cost");
+                drop_cluster_under = wcc.get<int>("--drop-cluster-under");
+                bypass_cluster = wcc.get<bool>("--bypass-clique");
 
                 // Ensure work-dir and sub-dir's exist
                 clusters_dir = work_dir + "/" + "clusters";
@@ -210,7 +261,7 @@ int main(int argc, char** argv) {
                 fs::create_directories(logs_clusters_dir);
 
                 // Initialize LoadBalancer (this partitions clustering and initializes job queue)
-                lb = std::make_unique<LoadBalancer>(edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under, bypass_cluster);
+                lb = std::make_unique<LoadBalancer>(method, edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under, bypass_cluster);
 
                 // Signal handling - Slurm sends SIGTERM before SIGKILL a job
                 // Also handle SIGABRT for internal errors (e.g., memory corruption, assertion failures)
@@ -235,6 +286,7 @@ int main(int argc, char** argv) {
     }
 
     // Synchronize arguments
+    bcast_string(method, 0, MPI_COMM_WORLD);
     bcast_string(work_dir, 0, MPI_COMM_WORLD);
     bcast_string(connectedness_criterion, 0, MPI_COMM_WORLD);
     bcast_string(mincut_type, 0, MPI_COMM_WORLD);
@@ -269,7 +321,7 @@ int main(int argc, char** argv) {
         if (is_worker) {
             Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);
             std::unique_ptr<Worker> worker = std::make_unique<Worker>(
-                worker_logger, work_dir, clusters_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster);
+                method, worker_logger, work_dir, clusters_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster);
 
             worker->run();
         }
