@@ -1,6 +1,6 @@
-# Distributed Constrained Clustering (Distributed CM)
+# Distributed Constrained Clustering (Distributed CC)
 
-A distributed implementation of Connectivity Modifier (CM) using MPI for parallel processing of large-scale graph clustering.
+A distributed implementation of Connectivity Modifier (CM) and Well-Connected Clusters (WCC) using MPI for parallel processing of large-scale graph clustering.
 
 ## Installation
 
@@ -21,13 +21,21 @@ git submodule update --init --recursive
 
 ## Usage
 
+The program supports two methods: **CM** (Connectivity Modifier) and **WCC** (Well-Connected Clusters).
+
 ```bash
+# CM mode
 mpirun -np <num_processes> ./distributed-constrained-clustering CM [OPTIONS]
+
+# WCC mode
+mpirun -np <num_processes> ./distributed-constrained-clustering WCC [OPTIONS]
 ```
 
 ## Arguments
 
-### Required Arguments
+### Common Arguments (CM and WCC)
+
+#### Required Arguments
 
 | Argument | Description |
 |----------|-------------|
@@ -35,12 +43,10 @@ mpirun -np <num_processes> ./distributed-constrained-clustering CM [OPTIONS]
 | `--existing-clustering <path>` | Path to the existing clustering file. The file should contain node-to-cluster mappings in CSV format with a header row. |
 | `--output-file <path>` | Path to the output clustering file where the final results will be written. |
 
-### Optional Arguments
+#### Optional Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--algorithm <name>` | - | Clustering algorithm to use. Options: `leiden-cpm`, `leiden-mod`, `louvain`. |
-| `--clustering-parameter <value>` | `0.01` | Clustering parameter (e.g., resolution parameter for Leiden-CPM). |
 | `--work-dir <path>` | `dcm-work-dir` | Directory to store intermediate results. Can be used to restore progress via checkpointing. |
 | `--log-level <level>` | `1` | Logging verbosity level. `0` = silent, `1` = info, `2` = verbose/debug. |
 | `--connectedness-criterion <expr>` | `1log_10(n)` | Well-connectedness criterion. Format: `Clog_x(n)` or `Cn^x` where C is a constant, x is the base/exponent, and n is the cluster size. |
@@ -51,18 +57,31 @@ mpirun -np <num_processes> ./distributed-constrained-clustering CM [OPTIONS]
 | `--partition-only` | `false` | Stop after partitioning (Phase 1) without launching computation jobs. Useful for preparing clusters for later processing. |
 | `--min-batch-cost <value>` | `1.0` | Minimum total estimated cost per batch when assigning clusters to workers. Higher values mean more clusters per batch, reducing communication overhead. |
 
-### Finer Control Arguments
+#### Finer Control Arguments
 
-These arguments are reserved for expert users. They control subtle behaviors of Distributed CM that may conflict with other arguments. Use with caution.
+These arguments are reserved for expert users. They control subtle behaviors that may conflict with other arguments. Use with caution.
 
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--drop-cluster-under <n>` | `-1` | Drop clusters with fewer than `n` nodes during partitioning. `-1` means no filtering. |
-| `--bypass-clique` | `false` | Automatically accept cliques without CM processing, regardless of the connectedness criterion. Bypassed clusters are written directly to output. |
+| `--bypass-clique` | `false` | Automatically accept cliques without processing, regardless of the connectedness criterion. Bypassed clusters are written directly to output. |
+
+### CM-Specific Arguments
+
+These arguments are only available when using the CM method.
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--algorithm <name>` | - | Clustering algorithm to use. Options: `leiden-cpm`, `leiden-mod`, `louvain`. |
+| `--clustering-parameter <value>` | `0.01` | Clustering parameter (e.g., resolution parameter for Leiden-CPM). |
+
+### WCC-Specific Arguments
+
+WCC uses only the common arguments. It performs mincut-based well-connectedness checking without re-clustering.
 
 ## Examples
 
-### Basic Usage
+### CM: Basic Usage
 
 ```bash
 mpirun -np 4 ./distributed-constrained-clustering CM \
@@ -72,7 +91,7 @@ mpirun -np 4 ./distributed-constrained-clustering CM \
     --algorithm leiden-cpm
 ```
 
-### With Custom Parameters
+### CM: With Custom Parameters
 
 ```bash
 mpirun -np 8 ./distributed-constrained-clustering CM \
@@ -88,9 +107,31 @@ mpirun -np 8 ./distributed-constrained-clustering CM \
     --mincut-type cactus
 ```
 
+### WCC: Basic Usage
+
+```bash
+mpirun -np 4 ./distributed-constrained-clustering WCC \
+    --edgelist network.csv \
+    --existing-clustering initial_clustering.csv \
+    --output-file output.csv
+```
+
+### WCC: With Custom Parameters
+
+```bash
+mpirun -np 8 ./distributed-constrained-clustering WCC \
+    --edgelist network.csv \
+    --existing-clustering initial_clustering.csv \
+    --output-file output.csv \
+    --work-dir my-work-dir \
+    --log-level 2 \
+    --connectedness-criterion "2log_10(n)" \
+    --mincut-type cactus
+```
+
 ### Partition-Only Mode
 
-First, partition the clustering:
+First, partition the clustering (works with either CM or WCC):
 
 ```bash
 mpirun -np 1 ./distributed-constrained-clustering CM \
