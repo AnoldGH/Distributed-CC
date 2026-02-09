@@ -36,6 +36,8 @@ LoadBalancer::LoadBalancer(const std::string& method,
     std::string summary_filename = partitioned_clusters_dir + "/summary.csv";
 
     logger.info("LoadBalancer initialization starting");
+
+    /** Arguments Logs */
     logger.info("Method: " + method);
     logger.info("Edgelist: " + edgelist);
     logger.info("Cluster file: " + cluster_file);
@@ -72,6 +74,9 @@ LoadBalancer::LoadBalancer(const std::string& method,
     // TODO: if we load a checkpoint and discovers that there are no jobs left, we should check if the aggregation is also completed - which means no job will be ran
 
     logger.info("LoadBalancer initialization complete");
+
+    /** Termination Logs */
+
     logger.flush(); // flush when the program terminates normally
 }
 
@@ -348,13 +353,23 @@ void LoadBalancer::run() {
 
     while (active_workers > 0) {
         // Listen to incoming messages from workers
-        int message;
         MPI_Status status;
-        MPI_Recv(&message, 1, MPI_INT, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+        MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 
-        // Check message type
         int worker_rank = status.MPI_SOURCE;
         MessageType message_type = static_cast<MessageType>(status.MPI_TAG);
+
+        // Worker report: variable-size message, handle separately
+        if (message_type == MessageType::WORKER_REPORT) {
+            int report_data[3];
+            MPI_Recv(report_data, 3, MPI_INT, worker_rank, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            worker_reports[worker_rank] = {report_data[0], report_data[1], report_data[2]};
+            continue;
+        }
+
+        // All other messages are single-int
+        int message;
+        MPI_Recv(&message, 1, MPI_INT, worker_rank, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
         if (message_type == MessageType::WORK_REQUEST) {
             // Worker requests a job
@@ -461,6 +476,17 @@ void LoadBalancer::run() {
     }
 
     logger.info("Program-level output aggregation completed.");
+
+    // Log worker report summary
+    int total_oom = 0, total_timeout = 0, global_peak_mb = 0;
+    for (const auto& [rank, r] : worker_reports) {
+        total_oom += r.oom_count;
+        total_timeout += r.timeout_count;
+        if (r.peak_memory_mb > global_peak_mb) global_peak_mb = r.peak_memory_mb;
+    }
+    logger.info("Worker report summary: " + std::to_string(total_oom) + " OOM kills, "
+                + std::to_string(total_timeout) + " timeouts, peak cluster memory " + std::to_string(global_peak_mb) + " MB");
+
     logger.info("LoadBalancer runtime phase ended");
 
     std::string checkpoint_file = work_dir + "/checkpoint.csv";

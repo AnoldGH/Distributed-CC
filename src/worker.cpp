@@ -43,11 +43,18 @@ void Worker::run() {
     fs::create_directories(work_dir + "/history/worker_" + std::to_string(rank) + "/");
 
     // Worker main loop
+    int request_count = 0;
     while (true) {
         // Send work request to load balancer (rank 0)
         logger.info("Requesting cluster from the load balancer");
         int request_msg = to_int(MessageType::WORK_REQUEST);
         MPI_Send(&request_msg, 1, MPI_INT, 0, to_int(MessageType::WORK_REQUEST), MPI_COMM_WORLD);
+
+        // Send cumulative report every 10 requests (best-effort)
+        if (++request_count % 10 == 0) {
+            int report_data[3] = {report.oom_count, report.timeout_count, report.peak_memory_mb};
+            MPI_Send(report_data, 3, MPI_INT, 0, to_int(MessageType::WORKER_REPORT), MPI_COMM_WORLD);
+        }
 
         // Receive cluster IDs from load balancer
         MPI_Status status;
@@ -83,6 +90,12 @@ void Worker::run() {
                 logger.info("Aborted cluster " + std::to_string(cluster));
             }
         }
+    }
+
+    // Send final report before aggregation
+    {
+        int report_data[3] = {report.oom_count, report.timeout_count, report.peak_memory_mb};
+        MPI_Send(report_data, 3, MPI_INT, 0, to_int(MessageType::WORKER_REPORT), MPI_COMM_WORLD);
     }
 
     // Aggregation phase: combine all output files into one worker-specific file
@@ -226,11 +239,15 @@ bool Worker::process_cluster(int cluster_id) {
             logger.flush();
         }
 
-        // Log peak memory usage
-        logger.log("Cluster " + std::to_string(cluster_id) + " peak memory: " + std::to_string(usage.ru_maxrss / 1024) + " MB");
+        // Log and track peak memory usage
+        int memory_mb = static_cast<int>(usage.ru_maxrss / 1024);
+        logger.log("Cluster " + std::to_string(cluster_id) + " peak memory: " + std::to_string(memory_mb) + " MB");
+        if (memory_mb > report.peak_memory_mb)
+            report.peak_memory_mb = memory_mb;
 
         if (timed_out) {
             logger.log("Timeout. Child was killed after " + std::to_string(time_limit_per_cluster) + " seconds");
+            ++report.timeout_count;
             return false;
         }
 
@@ -240,6 +257,8 @@ bool Worker::process_cluster(int cluster_id) {
             return WEXITSTATUS(status) == 0;
         } else {
             logger.log("Child killed by signal: " + std::to_string(WTERMSIG(status)));
+            if (WTERMSIG(status) == SIGKILL)
+                ++report.oom_count;  // SIGKILL without timeout is likely OOM
             return false;
         }
     } else {

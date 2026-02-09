@@ -1,5 +1,6 @@
 #pragma once
 #include <logger.hpp>
+#include <constants.hpp>
 #include <string>
 #include <vector>
 #include <queue>
@@ -25,6 +26,7 @@ private:
     bool auto_accept_clique;
     std::vector<ClusterInfo> unprocessed_clusters;              // Vector of unprocessed clusters
     std::unordered_map<int, ClusterInfo> in_flight_clusters;    // Clusters that are assigned but not yet completed - map for quicker lookup
+    std::unordered_map<int, WorkerReport> worker_reports;       // Latest cumulative report per worker rank
 
     /**
      * Partition clustering into separate cluster files

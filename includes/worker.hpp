@@ -1,5 +1,6 @@
 #pragma once
 #include <logger.hpp>
+#include <constants.hpp>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,8 @@ private:
     std::string mincut_type;
     bool prune;
     int time_limit_per_cluster;  // -1 = no limit
+
+    WorkerReport report = {0, 0, 0};  // cumulative stats sent to LB
 
     /**
      * Process a single cluster
