@@ -57,6 +57,7 @@ mpirun -np <num_processes> ./distributed-constrained-clustering WCC [OPTIONS]
 | `--partition-only` | `false` | Stop after partitioning (Phase 1) without launching computation jobs. Useful for preparing clusters for later processing. |
 | `--min-batch-cost <value>` | `1.0` | Minimum total estimated cost per batch when assigning clusters to workers. Higher values mean more clusters per batch, reducing communication overhead. |
 | `--report-interval <n>` | `10` | Workers send status reports (OOM count, timeout count, peak memory) to the load balancer every `n` work requests. `-1` disables reporting. |
+| `--num-processors <n>` | `1` | Number of threads each worker uses for parallel mincut computation within a cluster. When using Slurm, the user must explicitly allocate the corresponding resources (e.g., `--cpus-per-task`). See [Slurm Usage](#slurm-usage) for details. |
 
 #### Finer Control Arguments
 
@@ -207,6 +208,34 @@ To resume from a checkpoint, simply re-run the program with the same `--work-dir
 │   └── bypass.out          # Bypassed clusters (e.g., cliques)
 ├── history/                # CM history files
 └── pending/                # Pending cluster markers
+```
+
+## Slurm Usage
+
+When running on a Slurm cluster, `--num-processors` only tells the program how many threads each worker should spawn. It does **not** allocate resources automatically — the user must request the correct amount of CPUs in the Slurm job script.
+
+Since rank 0 is the load balancer (needing only 1 CPU) while worker ranks each need `num-processors` CPUs, a heterogeneous job is recommended:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=distributed_cm
+#SBATCH --time=04:00:00
+#SBATCH --signal=B:TERM@60
+
+# Rank 0 (load balancer): 1 task, 1 CPU
+#SBATCH --ntasks=1 --cpus-per-task=1 --mem-per-cpu=4GB
+#SBATCH hetjob
+# Ranks 1-3 (workers): 3 tasks, 4 CPUs each
+#SBATCH --ntasks=3 --cpus-per-task=4 --mem-per-cpu=4GB
+
+module load openmpi
+
+srun ./distributed_connectivity_modifier CM \
+    --edgelist network.csv \
+    --existing-clustering clustering.csv \
+    --output-file output.csv \
+    --algorithm leiden-cpm \
+    --num-processors 4
 ```
 
 ## Architecture

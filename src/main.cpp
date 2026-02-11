@@ -64,6 +64,7 @@ int main(int argc, char** argv) {
     int drop_cluster_under;
     bool bypass_cluster;
     int report_interval;
+    int num_processors;
 
     std::string algorithm;
     double clustering_parameter;
@@ -128,6 +129,10 @@ int main(int argc, char** argv) {
             common.add_argument("--report-interval")
                 .default_value(int(10))
                 .help("Workers send status reports to LB every N requests (-1 = disabled)")
+                .scan<'d', int>();
+            common.add_argument("--num-processors")
+                .default_value(int(1))
+                .help("Number of processors each worker uses for CM/MincutOnly")
                 .scan<'d', int>();
 
             /**
@@ -211,6 +216,7 @@ int main(int argc, char** argv) {
                 drop_cluster_under = cm.get<int>("--drop-cluster-under");
                 bypass_cluster = cm.get<bool>("--bypass-clique");
                 report_interval = cm.get<int>("--report-interval");
+                num_processors = cm.get<int>("--num-processors");
 
                 // Ensure work-dir and sub-dir's exist
                 clusters_dir = work_dir + "/" + "clusters";
@@ -259,6 +265,7 @@ int main(int argc, char** argv) {
                 drop_cluster_under = wcc.get<int>("--drop-cluster-under");
                 bypass_cluster = wcc.get<bool>("--bypass-clique");
                 report_interval = wcc.get<int>("--report-interval");
+                num_processors = wcc.get<int>("--num-processors");
 
                 // Ensure work-dir and sub-dir's exist
                 clusters_dir = work_dir + "/" + "clusters";
@@ -306,6 +313,7 @@ int main(int argc, char** argv) {
     MPI_Bcast(&use_rank_0_worker, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
     MPI_Bcast(&time_limit_per_cluster, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&report_interval, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&num_processors, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&partition_only, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
 
     clusters_dir = work_dir + "/" + "clusters";
@@ -329,7 +337,7 @@ int main(int argc, char** argv) {
         if (is_worker) {
             Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);
             std::unique_ptr<Worker> worker = std::make_unique<Worker>(
-                method, worker_logger, work_dir, clusters_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster, report_interval);
+                method, worker_logger, work_dir, clusters_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster, report_interval, num_processors);
 
             worker->run();
         }

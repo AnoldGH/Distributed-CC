@@ -18,6 +18,7 @@ private:
     bool prune;
     int time_limit_per_cluster;  // -1 = no limit
     int report_interval;         // send report every N requests, -1 = disabled
+    int num_processors;          // number of processors per worker for CM/MincutOnly
 
     WorkerReport report = {0, 0, 0};  // cumulative stats sent to LB
 
@@ -34,6 +35,7 @@ public:
            int log_level, const std::string& connectedness_criterion,
            const std::string& mincut_type, bool prune,
            int time_limit_per_cluster = -1,
-           int report_interval = 10);
+           int report_interval = 10,
+           int num_processors = 1);
     void run();
 };

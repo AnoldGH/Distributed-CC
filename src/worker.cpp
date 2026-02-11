@@ -25,13 +25,15 @@ Worker::Worker(const std::string& method, Logger& logger, const std::string& wor
                int log_level, const std::string& connectedness_criterion,
                const std::string& mincut_type, bool prune,
                int time_limit_per_cluster,
-               int report_interval)
+               int report_interval,
+               int num_processors)
     : method(method), logger(logger), work_dir(work_dir), clusters_dir(clusters_dir),
       algorithm(algorithm), clustering_parameter(clustering_parameter),
       log_level(log_level), connectedness_criterion(connectedness_criterion),
       mincut_type(mincut_type), prune(prune),
       time_limit_per_cluster(time_limit_per_cluster),
-      report_interval(report_interval) {}
+      report_interval(report_interval),
+      num_processors(num_processors) {}
 
 // Main run function
 void Worker::run() {
@@ -196,9 +198,9 @@ bool Worker::process_cluster(int cluster_id) {
         // CM or WCC
         ConstrainedClustering* cc;
         if (method == "CM") {
-            cc = new CM(cluster_edgelist, this->algorithm, this->clustering_parameter, cluster_clustering_file, 1, output_file, log_file, history_file, this->log_level, this->connectedness_criterion, this->prune, this->mincut_type);
+            cc = new CM(cluster_edgelist, this->algorithm, this->clustering_parameter, cluster_clustering_file, this->num_processors, output_file, log_file, history_file, this->log_level, this->connectedness_criterion, this->prune, this->mincut_type);
         } else if (method == "WCC") {
-            cc = new MincutOnly(cluster_edgelist, cluster_clustering_file, 1, output_file, log_file, this->log_level, this->connectedness_criterion, this->mincut_type);
+            cc = new MincutOnly(cluster_edgelist, cluster_clustering_file, this->num_processors, output_file, log_file, this->log_level, this->connectedness_criterion, this->mincut_type);
         }
 
         cc->main();  // run constrained clustering
