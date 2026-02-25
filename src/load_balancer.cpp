@@ -127,44 +127,15 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
 
     std::vector<ClusterInfo> created_clusters;  // Track which clusters were created
 
-    // Get delimiters
-    char edgelist_delimiter = get_delimiter(edgelist);
-    char cluster_delimiter = get_delimiter(cluster_file);
-
-    logger.debug(std::string("Delimiters detected - edgelist: '") + edgelist_delimiter +
-                "', cluster: '" + cluster_delimiter + "'");
-
     // Read clustering file: node_id -> cluster_id
     logger.debug("Reading clustering file...");
     std::unordered_map<int, int> node_to_cluster;
     std::unordered_map<int, std::set<int>> cluster_to_node;
-    // std::set<int> cluster_ids;
     std::unordered_map<int, ClusterInfo> clusters;
 
-    std::ifstream clustering_stream(cluster_file);
-    if (!clustering_stream.is_open()) {
-        logger.error("Failed to open clustering file: " + cluster_file);
-        throw std::runtime_error("Failed to open clustering file: " + cluster_file);
-    }
-
-    std::string line;
-    std::getline(clustering_stream, line); // Skip header
-    logger.debug("Clustering file header: " + line);
-
-    int clustering_lines = 0;
-    while (std::getline(clustering_stream, line)) {
-        std::stringstream ss(line);
-        std::string node_str, cluster_str;
-
-        std::getline(ss, node_str, cluster_delimiter);
-        std::getline(ss, cluster_str, cluster_delimiter);
-
-        int node_id = std::stoi(node_str);
-        int cluster_id = std::stoi(cluster_str);
-
+    auto add_cluster_entry = [&](int node_id, int cluster_id) {
         node_to_cluster[node_id] = cluster_id;
         cluster_to_node[cluster_id].insert(node_id);
-
         if (clusters.count(cluster_id)) {
             ++clusters[cluster_id].node_count;
         } else {
@@ -174,10 +145,42 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
             info.edge_count = 0;
             clusters.insert({cluster_id, info});
         }
+    };
 
-        clustering_lines++;
+    int clustering_lines = 0;
+    if (is_binary_cluster(cluster_file)) {
+        std::ifstream clustering_stream(cluster_file, std::ios::binary);
+        if (!clustering_stream.is_open()) {
+            logger.error("Failed to open clustering file: " + cluster_file);
+            throw std::runtime_error("Failed to open clustering file: " + cluster_file);
+        }
+        uint32_t num_entries;
+        clustering_stream.read(reinterpret_cast<char*>(&num_entries), sizeof(num_entries));
+        for (uint32_t i = 0; i < num_entries; ++i) {
+            int32_t node_id, cluster_id;
+            clustering_stream.read(reinterpret_cast<char*>(&node_id), sizeof(node_id));
+            clustering_stream.read(reinterpret_cast<char*>(&cluster_id), sizeof(cluster_id));
+            add_cluster_entry(node_id, cluster_id);
+            clustering_lines++;
+        }
+    } else {
+        char cluster_delimiter = get_delimiter(cluster_file);
+        std::ifstream clustering_stream(cluster_file);
+        if (!clustering_stream.is_open()) {
+            logger.error("Failed to open clustering file: " + cluster_file);
+            throw std::runtime_error("Failed to open clustering file: " + cluster_file);
+        }
+        std::string line;
+        std::getline(clustering_stream, line); // Skip header
+        while (std::getline(clustering_stream, line)) {
+            std::stringstream ss(line);
+            std::string node_str, cluster_str;
+            std::getline(ss, node_str, cluster_delimiter);
+            std::getline(ss, cluster_str, cluster_delimiter);
+            add_cluster_entry(std::stoi(node_str), std::stoi(cluster_str));
+            clustering_lines++;
+        }
     }
-    clustering_stream.close();
     logger.debug("Read " + std::to_string(clustering_lines) + " nodes in " +
                 std::to_string(clusters.size()) + " clusters");
 
@@ -186,43 +189,53 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
 
     // Read edgelist and partition edges
     logger.debug("Reading edgelist file...");
-    std::ifstream edgelist_stream(edgelist);
-    if (!edgelist_stream.is_open()) {
-        logger.error("Failed to open edgelist file: " + edgelist);
-        throw std::runtime_error("Failed to open edgelist file: " + edgelist);
-    }
-
-    std::getline(edgelist_stream, line); // Skip header
-    logger.debug("Edgelist file header: " + line);
-
     int total_edges = 0;
     int intra_cluster_edges = 0;
-    while (std::getline(edgelist_stream, line)) {
-        std::stringstream ss(line);
-        std::string source_str, target_str;
 
-        std::getline(ss, source_str, edgelist_delimiter);
-        std::getline(ss, target_str, edgelist_delimiter);
-
-        int source = std::stoi(source_str);
-        int target = std::stoi(target_str);
+    auto add_edge = [&](int source, int target) {
         total_edges++;
-
-        // Check if both nodes are in the clustering
         if (node_to_cluster.find(source) != node_to_cluster.end() &&
             node_to_cluster.find(target) != node_to_cluster.end()) {
-
             int source_cluster = node_to_cluster[source];
             int target_cluster = node_to_cluster[target];
-
-            // If both nodes in same cluster, add edge to that cluster
             if (source_cluster == target_cluster) {
                 cluster_edges[source_cluster].emplace_back(source, target);
                 intra_cluster_edges++;
             }
         }
+    };
+
+    if (is_binary_edgelist(edgelist)) {
+        std::ifstream edgelist_stream(edgelist, std::ios::binary);
+        if (!edgelist_stream.is_open()) {
+            logger.error("Failed to open edgelist file: " + edgelist);
+            throw std::runtime_error("Failed to open edgelist file: " + edgelist);
+        }
+        uint32_t num_edges;
+        edgelist_stream.read(reinterpret_cast<char*>(&num_edges), sizeof(num_edges));
+        for (uint32_t i = 0; i < num_edges; ++i) {
+            int32_t source, target;
+            edgelist_stream.read(reinterpret_cast<char*>(&source), sizeof(source));
+            edgelist_stream.read(reinterpret_cast<char*>(&target), sizeof(target));
+            add_edge(source, target);
+        }
+    } else {
+        char edgelist_delimiter = get_delimiter(edgelist);
+        std::ifstream edgelist_stream(edgelist);
+        if (!edgelist_stream.is_open()) {
+            logger.error("Failed to open edgelist file: " + edgelist);
+            throw std::runtime_error("Failed to open edgelist file: " + edgelist);
+        }
+        std::string line;
+        std::getline(edgelist_stream, line); // Skip header
+        while (std::getline(edgelist_stream, line)) {
+            std::stringstream ss(line);
+            std::string source_str, target_str;
+            std::getline(ss, source_str, edgelist_delimiter);
+            std::getline(ss, target_str, edgelist_delimiter);
+            add_edge(std::stoi(source_str), std::stoi(target_str));
+        }
     }
-    edgelist_stream.close();
     logger.debug("Read " + std::to_string(total_edges) + " edges, " +
                 std::to_string(intra_cluster_edges) + " intra-cluster edges");
 
@@ -243,31 +256,14 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
         }
         cluster_info.edge_count = edge_count;
 
-        std::string filename = output_dir + "/" + std::to_string(cluster_id) + ".edgelist";
-        std::string cluster_filename = output_dir + "/" + std::to_string(cluster_id) + ".cluster";
-        std::ofstream out(filename);
-        std::ofstream cluster_out(cluster_filename);
+        std::string filename = output_dir + "/" + std::to_string(cluster_id) + ".bedgelist";
+        std::string cluster_filename = output_dir + "/" + std::to_string(cluster_id) + ".bcluster";
 
-        if (!out.is_open()) {
-            logger.error("Failed to create output file: " + filename);
-            throw std::runtime_error("Failed to create output file: " + filename);
-        }
+        // Write binary edgelist
+        write_binary_edgelist(filename, cluster_edges[cluster_id]);
 
-        out << "source,target\n";
-        cluster_out << "node_id,cluster_id\n";
-
-        // Write edgelist
-        for (const auto& edge : cluster_edges[cluster_id]) {
-            out << edge.first << "," << edge.second << "\n";
-        }
-
-        // Write cluster file
-        for (const auto& node : cluster_to_node[cluster_id]) {
-            cluster_out << node << "," << cluster_id << "\n";
-        }
-
-        out.close();
-        cluster_out.close();
+        // Write binary cluster file
+        write_binary_cluster(cluster_filename, cluster_to_node[cluster_id], cluster_id);
         files_written++;
         created_clusters.emplace_back(cluster_info);  // Track this cluster
     }

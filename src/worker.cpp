@@ -177,8 +177,15 @@ bool Worker::process_cluster(int cluster_id) {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    std::string cluster_edgelist = clusters_dir + "/" + std::to_string(cluster_id) + ".edgelist";
-    std::string cluster_clustering_file = clusters_dir + "/" + std::to_string(cluster_id) + ".cluster";
+    std::string cluster_edgelist = clusters_dir + "/" + std::to_string(cluster_id) + ".bedgelist";
+    if (!std::filesystem::exists(cluster_edgelist)) {
+        // Fallback to text format for backward compatibility
+        cluster_edgelist = clusters_dir + "/" + std::to_string(cluster_id) + ".edgelist";
+    }
+    std::string cluster_clustering_file = clusters_dir + "/" + std::to_string(cluster_id) + ".bcluster";
+    if (!std::filesystem::exists(cluster_clustering_file)) {
+        cluster_clustering_file = clusters_dir + "/" + std::to_string(cluster_id) + ".cluster";
+    }
     logger.debug("Processing cluster file: " + cluster_edgelist);
 
     logger.flush(); // to avoid duplicate logs after fork()
