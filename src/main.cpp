@@ -65,6 +65,7 @@ int main(int argc, char** argv) {
     bool bypass_cluster;
     int report_interval;
     int num_processors;
+    int yield_node_threshold;
 
     std::string algorithm;
     double clustering_parameter;
@@ -133,6 +134,10 @@ int main(int argc, char** argv) {
             common.add_argument("--num-processors")
                 .default_value(int(1))
                 .help("Number of processors each worker uses for CM/MincutOnly")
+                .scan<'d', int>();
+            common.add_argument("--yield-node-threshold")
+                .default_value(int(0))
+                .help("Min node count for yielding sub-clusters back to LB for redistribution (0 = disabled)")
                 .scan<'d', int>();
 
             /**
@@ -217,6 +222,7 @@ int main(int argc, char** argv) {
                 bypass_cluster = cm.get<bool>("--bypass-clique");
                 report_interval = cm.get<int>("--report-interval");
                 num_processors = cm.get<int>("--num-processors");
+                yield_node_threshold = cm.get<int>("--yield-node-threshold");
 
                 // Ensure work-dir and sub-dir's exist
                 clusters_dir = work_dir + "/" + "clusters";
@@ -266,6 +272,7 @@ int main(int argc, char** argv) {
                 bypass_cluster = wcc.get<bool>("--bypass-clique");
                 report_interval = wcc.get<int>("--report-interval");
                 num_processors = wcc.get<int>("--num-processors");
+                yield_node_threshold = wcc.get<int>("--yield-node-threshold");
 
                 // Ensure work-dir and sub-dir's exist
                 clusters_dir = work_dir + "/" + "clusters";
@@ -314,6 +321,7 @@ int main(int argc, char** argv) {
     MPI_Bcast(&time_limit_per_cluster, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&report_interval, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&num_processors, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&yield_node_threshold, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&partition_only, 1, MPI_CXX_BOOL, 0, MPI_COMM_WORLD);
 
     clusters_dir = work_dir + "/" + "clusters";
@@ -337,7 +345,7 @@ int main(int argc, char** argv) {
         if (is_worker) {
             Logger worker_logger(logs_dir + "/" + "worker_" + std::to_string(rank) + ".log", log_level);
             std::unique_ptr<Worker> worker = std::make_unique<Worker>(
-                method, worker_logger, work_dir, clusters_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster, report_interval, num_processors);
+                method, worker_logger, work_dir, clusters_dir, algorithm, clustering_parameter, log_level, connectedness_criterion, mincut_type, prune, time_limit_per_cluster, report_interval, num_processors, yield_node_threshold);
 
             worker->run();
         }

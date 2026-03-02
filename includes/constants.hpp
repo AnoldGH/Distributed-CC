@@ -7,12 +7,13 @@ enum class MessageType: int {
     WORK_DONE = 1,      // the processing of the assigned cluster is completed successfully
     WORK_ABORTED = 2,   // the processing of the assigned cluster is aborted
     AGGREGATE_DONE = 3, // aggregation of results completed
-
-    // LB to Worker
-    DISTRIBUTE_WORK = 4,    // distribute a cluster to be processed
-
+    // Data: [parent_cluster_id, child_global_id, node_count, edge_count]
+    YIELD_REPORT = 4,   // report yielded sub-clusters from CC
     // Worker to LB (piggybacked on WORK_REQUEST)
     WORKER_REPORT = 5,      // worker status report, sent immediately after WORK_REQUEST
+
+    // LB to Worker
+    DISTRIBUTE_WORK = 6,    // distribute a cluster to be processed
 };
 
 constexpr int to_int(MessageType messageType) {

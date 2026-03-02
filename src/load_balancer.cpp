@@ -30,7 +30,8 @@ LoadBalancer::LoadBalancer(const std::string& method,
       use_rank_0_worker(use_rank_0_worker),
       min_batch_cost(min_batch_cost),
       drop_cluster_under(drop_cluster_under),
-      auto_accept_clique(auto_accept_clique) {
+      auto_accept_clique(auto_accept_clique),
+      job_queue(CostCompare{this}) {
 
     const std::string clusters_dir = work_dir + "/" + "clusters";
     std::string summary_filename = partitioned_clusters_dir + "/summary.csv";
@@ -320,19 +321,51 @@ std::vector<ClusterInfo> LoadBalancer::load_partitioned_clusters(const std::stri
 void LoadBalancer::initialize_job_queue(const std::vector<ClusterInfo>& created_clusters) {
     logger.info("Initializing job queue with " + std::to_string(created_clusters.size()) + " clusters");
 
-    // Copy clusters to job_queue
-    unprocessed_clusters = created_clusters;
+    for (const auto& c : created_clusters) {
+        job_queue.push(c);
+        job_queue_active++;
+    }
 
-    // Sort by cost in descending order. This is a trick to make sorting and popping cheaper.
-    // Since we pop from the back, we want most costly at the end.
-    std::sort(unprocessed_clusters.begin(), unprocessed_clusters.end(),
-        [this](const ClusterInfo& a, const ClusterInfo& b) {
-            float cost_a = get_cost(a.node_count, a.edge_count);
-            float cost_b = get_cost(b.node_count, b.edge_count);
-            return cost_a < cost_b;  // Ascending order, so most costly is at the back
-        });
+    logger.info("Job queue initialized with " + std::to_string(job_queue_active) + " unprocessed clusters.");
+}
 
-    logger.info("Job queue initialized with " + std::to_string(unprocessed_clusters.size()) + " unprocessed clusters.");
+// Pop clusters from job_queue (skipping dropped entries), batch up to min_batch_cost,
+// assign to worker_rank via MPI. Returns true if work was assigned.
+bool LoadBalancer::assign_batch(int worker_rank) {
+    std::vector<int> assign_clusters;
+    float batch_cost = 0;
+
+    while (!job_queue.empty() && batch_cost < min_batch_cost) {
+        ClusterInfo cluster_info = job_queue.top();
+        job_queue.pop();
+
+        // Lazy deletion: skip dropped clusters
+        if (dropped_clusters.erase(cluster_info.cluster_id)) {
+            continue;
+        }
+
+        job_queue_active--;
+        assign_clusters.push_back(cluster_info.cluster_id);
+        in_flight_clusters[cluster_info.cluster_id] = cluster_info;
+
+        float cost = get_cost(cluster_info);
+        batch_cost += cost;
+
+        logger.info("Assigning cluster " + std::to_string(cluster_info.cluster_id) +
+            " (nodes: " + std::to_string(cluster_info.node_count) +
+            ", edges: " + std::to_string(cluster_info.edge_count) +
+            ", estimated cost: " + std::to_string(cost) + ")" +
+            " to worker " + std::to_string(worker_rank) +
+            " (" + std::to_string(job_queue_active) + " jobs remaining)");
+
+        std::ofstream pending_out(work_dir + "/" + "pending" + "/" + std::to_string(cluster_info.cluster_id));
+    }
+
+    if (assign_clusters.empty()) return false;
+
+    MPI_Send(assign_clusters.data(), assign_clusters.size(), MPI_INT, worker_rank,
+             to_int(MessageType::DISTRIBUTE_WORK), MPI_COMM_WORLD);
+    return true;
 }
 
 // Runtime phase: Distribute jobs to workers
@@ -347,6 +380,10 @@ void LoadBalancer::run() {
 
     int active_workers = num_workers;
 
+    // Workers whose WORK_REQUEST is deferred because the queue is empty
+    // but in-flight clusters may still yield new work.
+    std::vector<int> pending_work_requests;
+
     while (active_workers > 0) {
         // Listen to incoming messages from workers
         MPI_Status status;
@@ -355,7 +392,7 @@ void LoadBalancer::run() {
         int worker_rank = status.MPI_SOURCE;
         MessageType message_type = static_cast<MessageType>(status.MPI_TAG);
 
-        // Worker report: variable-size message, handle separately
+        // Worker report: 3-int message, handle separately
         if (message_type == MessageType::WORKER_REPORT) {
             int report_data[3];
             MPI_Recv(report_data, 3, MPI_INT, worker_rank, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
@@ -363,55 +400,107 @@ void LoadBalancer::run() {
             continue;
         }
 
-        // All other messages are single-int
-        int message;
-        MPI_Recv(&message, 1, MPI_INT, worker_rank, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        // Yield report: 4-int message [parent_id, child_id, node_count, edge_count]
+        // Sent in real-time as the child process yields sub-clusters
+        if (message_type == MessageType::YIELD_REPORT) {
+            int yield_data[4];
+            MPI_Recv(yield_data, 4, MPI_INT, worker_rank, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+            int parent_id = yield_data[0];
+            int child_id = yield_data[1];
+            int node_count = yield_data[2];
+            int edge_count = yield_data[3];
+
+            // Ensure parent exists in yield_tree (may not if WORK_DONE hasn't arrived yet).
+            // Create as root (parent_id=-1) if this is an original cluster.
+            if (!yield_tree.count(parent_id)) {
+                yield_tree[parent_id] = {parent_id, -1, false, false, 0, 0, {}};
+            }
+
+            YieldNode& parent_node = yield_tree[parent_id];
+
+            // If any ancestor is aborted, discard this child.
+            // Count it as resolved so the aborted ancestor can eventually resolve.
+            if (is_ancestor_aborted(parent_id)) {
+                logger.info("Discarding YIELD_REPORT for aborted ancestor chain"
+                    " (parent=" + std::to_string(parent_id) +
+                    ", child=" + std::to_string(child_id) + ")");
+                parent_node.resolved_children++;
+                try_resolve(parent_id, pending_work_requests);
+                continue;
+            }
+
+            // Create child node in yield_tree
+            yield_tree[child_id] = {child_id, parent_id, false, false, 0, 0, {}};
+            parent_node.children.push_back(child_id);
+
+            // Add child to queue
+            ClusterInfo yielded = {child_id, node_count, edge_count};
+            job_queue.push(yielded);
+            job_queue_active++;
+
+            logger.info("Yield: parent=" + std::to_string(parent_id) +
+                " child=" + std::to_string(child_id) +
+                " (nodes=" + std::to_string(node_count) +
+                ", edges=" + std::to_string(edge_count) +
+                ", cost=" + std::to_string(get_cost(node_count, edge_count)) + ")" +
+                " resolved=" + std::to_string(parent_node.resolved_children) +
+                "/" + std::to_string(parent_node.expected_yields) +
+                " (" + std::to_string(job_queue_active) + " jobs in queue)");
+
+            // Service any workers that were waiting for work
+            while (!pending_work_requests.empty()) {
+                int waiting_rank = pending_work_requests.back();
+                if (assign_batch(waiting_rank)) {
+                    pending_work_requests.pop_back();
+                } else {
+                    break;  // queue effectively empty
+                }
+            }
+
+            continue;
+        }
 
         if (message_type == MessageType::WORK_REQUEST) {
-            // Worker requests a job
-            std::vector<int> assign_clusters;   // clusters to assign
-            float batch_cost = 0;
+            int message;
+            MPI_Recv(&message, 1, MPI_INT, worker_rank, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-            if (!unprocessed_clusters.empty()) {
-                while (!unprocessed_clusters.empty() && batch_cost < min_batch_cost) {
-                    ClusterInfo cluster_info = unprocessed_clusters.back();
-                    unprocessed_clusters.pop_back();
-
-                    assign_clusters.push_back(cluster_info.cluster_id);
-                    in_flight_clusters[cluster_info.cluster_id] = cluster_info;  // keep track of assigned but not completed clusters
-
-                    float cost = get_cost(cluster_info.node_count, cluster_info.edge_count);
-                    batch_cost += cost;
-
-                    logger.info("Assigning cluster " + std::to_string(cluster_info.cluster_id) +
-                        " (nodes: " + std::to_string(cluster_info.node_count) +
-                        ", edges: " + std::to_string(cluster_info.edge_count) +
-                        ", estimated cost: " + std::to_string(cost) + ")" +
-                        " to worker " + std::to_string(worker_rank) +
-                        " (" + std::to_string(unprocessed_clusters.size()) + " jobs remaining)");
-
-                    std::ofstream pending_out(work_dir + "/" + "pending" + "/" + std::to_string(cluster_info.cluster_id));
-                }
+            if (assign_batch(worker_rank)) {
+                // Work assigned
+            } else if (!in_flight_clusters.empty()) {
+                // Queue is effectively empty but in-flight clusters may still yield new work.
+                // Defer this worker's request — respond when work becomes available
+                // or when all in-flight clusters complete.
+                pending_work_requests.push_back(worker_rank);
+                logger.info("Worker " + std::to_string(worker_rank) +
+                    " is waiting for work (" + std::to_string(in_flight_clusters.size()) +
+                    " clusters still in flight)");
             } else {
-                assign_clusters.push_back(NO_MORE_JOBS);
+                // Queue empty and nothing in flight — truly done
+                int no_more = NO_MORE_JOBS;
+                MPI_Send(&no_more, 1, MPI_INT, worker_rank,
+                         to_int(MessageType::DISTRIBUTE_WORK), MPI_COMM_WORLD);
                 logger.info("Sending termination signal to worker " + std::to_string(worker_rank));
             }
+        } else if (message_type == MessageType::WORK_DONE || message_type == MessageType::WORK_ABORTED) {
+            // Completion message: [cluster_id, yield_count]
+            // yield_count is the number of sub-clusters directly yielded during processing.
+            // All YIELD_REPORTs for those sub-clusters are guaranteed sent before this message
+            // on the worker side, but may arrive later due to MPI cross-tag reordering.
+            int done_data[2];
+            MPI_Recv(done_data, 2, MPI_INT, worker_rank, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            int cluster_id = done_data[0];
+            int yield_count = done_data[1];
+            bool is_aborted = (message_type == MessageType::WORK_ABORTED);
 
-            MPI_Send(assign_clusters.data(), assign_clusters.size(), MPI_INT, worker_rank, to_int(MessageType::DISTRIBUTE_WORK), MPI_COMM_WORLD);
-        } else if (message_type == MessageType::WORK_DONE) {
-            logger.info("Worker " + std::to_string(worker_rank) + " completed cluster " + std::to_string(message));
+            logger.info("Worker " + std::to_string(worker_rank) +
+                (is_aborted ? " aborted" : " completed") + " cluster " +
+                std::to_string(cluster_id) + " (yield_count=" + std::to_string(yield_count) + ")");
 
-            // Remove in-flight cluster
-            in_flight_clusters.erase(message);
-
-            try {
-                fs::remove(work_dir + "/" + "pending" + "/" + std::to_string(message));
-            } catch(const std::exception e) {
-                logger.error("No pending file found for cluster " + std::to_string(message));
-            }
-        } else if (message_type == MessageType::WORK_ABORTED) {
-            logger.info("Worker " + std::to_string(worker_rank) + " aborted cluster " + std::to_string(message));
+            handle_cluster_completion(cluster_id, pending_work_requests, yield_count, is_aborted);
         } else if (message_type == MessageType::AGGREGATE_DONE) {
+            int message;
+            MPI_Recv(&message, 1, MPI_INT, worker_rank, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             logger.info("Worker " + std::to_string(worker_rank) + " completed worker-level aggregation.");
             --active_workers;
         }
@@ -502,6 +591,171 @@ void LoadBalancer::run() {
 
 }
 
+// Shared completion logic for WORK_DONE and WORK_ABORTED.
+// Uses tree-based yield tracking: each node stays in yield_tree until fully resolved
+// (work_done, all yields received, all children resolved), then cascades upward.
+bool LoadBalancer::handle_cluster_completion(int cluster_id, std::vector<int>& pending_work_requests, int yield_count, bool aborted) {
+    // Clean up pending file
+    try {
+        fs::remove(work_dir + "/" + "pending" + "/" + std::to_string(cluster_id));
+    } catch(const std::exception& e) {
+        logger.error("No pending file found for cluster " + std::to_string(cluster_id));
+    }
+
+    // Simple case: no yields and not already in yield_tree (never yielded, never was yielded)
+    if (yield_count == 0 && !yield_tree.count(cluster_id)) {
+        in_flight_clusters.erase(cluster_id);
+        logger.info("Cluster " + std::to_string(cluster_id) + " completed (simple, no yields)");
+
+        // Deferred termination check
+        if (job_queue_active == 0 && in_flight_clusters.empty() && !pending_work_requests.empty()) {
+            for (int waiting_rank : pending_work_requests) {
+                int no_more = NO_MORE_JOBS;
+                MPI_Send(&no_more, 1, MPI_INT, waiting_rank,
+                         to_int(MessageType::DISTRIBUTE_WORK), MPI_COMM_WORLD);
+                logger.info("Sending termination signal to deferred worker " + std::to_string(waiting_rank));
+            }
+            pending_work_requests.clear();
+        }
+        return in_flight_clusters.empty();
+    }
+
+    // Ensure node exists in yield_tree (may already exist if YIELD_REPORTs arrived first)
+    if (!yield_tree.count(cluster_id)) {
+        yield_tree[cluster_id] = {cluster_id, -1, false, false, 0, 0, {}};
+    }
+
+    YieldNode& node = yield_tree[cluster_id];
+    node.work_done = true;
+    node.expected_yields = yield_count;
+    node.aborted = aborted;
+
+    // If this is a child node (not a root), remove from in_flight_clusters.
+    // The tree tracks it; only roots remain in in_flight.
+    if (node.parent_id != -1) {
+        in_flight_clusters.erase(cluster_id);
+    }
+
+    logger.info("Cluster " + std::to_string(cluster_id) +
+        (aborted ? " aborted" : " done") +
+        " (parent=" + std::to_string(node.parent_id) +
+        ", expected_yields=" + std::to_string(node.expected_yields) +
+        ", resolved_children=" + std::to_string(node.resolved_children) + ")");
+
+    // If aborted, sweep descendants: remove unprocessed children from queue,
+    // mark in-flight children for discard
+    if (aborted) {
+        sweep_aborted_descendants(cluster_id);
+    }
+
+    // Attempt resolution (may cascade upward)
+    try_resolve(cluster_id, pending_work_requests);
+
+    return in_flight_clusters.empty();
+}
+
+// Check resolution condition and cascade upward.
+// A node resolves when: work_done && resolved_children == expected_yields
+void LoadBalancer::try_resolve(int cluster_id, std::vector<int>& pending_work_requests) {
+    if (!yield_tree.count(cluster_id)) return;
+
+    YieldNode& node = yield_tree[cluster_id];
+
+    if (!node.work_done) return;
+    if (node.resolved_children < node.expected_yields) return;
+
+    // Node is fully resolved
+    int parent_id = node.parent_id;
+    logger.info("Yield node " + std::to_string(cluster_id) + " fully resolved"
+        " (parent=" + std::to_string(parent_id) + ")");
+
+    erase_subtree(cluster_id);
+
+    if (parent_id == -1) {
+        // Root resolved — remove from in_flight
+        in_flight_clusters.erase(cluster_id);
+        logger.info("Root cluster " + std::to_string(cluster_id) + " fully complete (all descendants resolved)");
+
+        // Deferred termination check
+        if (job_queue_active == 0 && in_flight_clusters.empty() && !pending_work_requests.empty()) {
+            for (int waiting_rank : pending_work_requests) {
+                int no_more = NO_MORE_JOBS;
+                MPI_Send(&no_more, 1, MPI_INT, waiting_rank,
+                         to_int(MessageType::DISTRIBUTE_WORK), MPI_COMM_WORLD);
+                logger.info("Sending termination signal to deferred worker " + std::to_string(waiting_rank));
+            }
+            pending_work_requests.clear();
+        }
+    } else {
+        // Child resolved — increment parent's resolved count and try to resolve parent
+        if (yield_tree.count(parent_id)) {
+            yield_tree[parent_id].resolved_children++;
+            logger.info("Child " + std::to_string(cluster_id) + " resolved under parent " +
+                std::to_string(parent_id) + " (" +
+                std::to_string(yield_tree[parent_id].resolved_children) + "/" +
+                std::to_string(yield_tree[parent_id].expected_yields) + " resolved)");
+            try_resolve(parent_id, pending_work_requests);
+        }
+    }
+}
+
+// Recursively remove a node and all its descendants from yield_tree.
+void LoadBalancer::erase_subtree(int cluster_id) {
+    if (!yield_tree.count(cluster_id)) return;
+
+    // Copy children list before erasing (iterator invalidation)
+    std::vector<int> children = yield_tree[cluster_id].children;
+    yield_tree.erase(cluster_id);
+
+    for (int child_id : children) {
+        erase_subtree(child_id);
+    }
+}
+
+// Walk the parent chain to check if any ancestor (including self) has been aborted.
+bool LoadBalancer::is_ancestor_aborted(int cluster_id) {
+    int current = cluster_id;
+    while (yield_tree.count(current)) {
+        if (yield_tree[current].aborted) return true;
+        if (yield_tree[current].parent_id == -1) break;
+        current = yield_tree[current].parent_id;
+    }
+    return false;
+}
+
+// For an aborted node: mark its unprocessed children for lazy deletion from job_queue.
+// In-flight children will be resolved normally (their WORK_DONE/WORK_ABORTED will arrive);
+// the aborted flag on the ancestor prevents new grandchildren from being enqueued.
+void LoadBalancer::sweep_aborted_descendants(int cluster_id) {
+    if (!yield_tree.count(cluster_id)) return;
+
+    YieldNode& node = yield_tree[cluster_id];
+    int swept = 0;
+
+    // Copy children list since we modify it
+    std::vector<int> children_copy = node.children;
+    for (int child_id : children_copy) {
+        if (!yield_tree.count(child_id)) continue;
+        YieldNode& child = yield_tree[child_id];
+
+        // Only drop children that are still in the queue (not yet assigned to a worker)
+        if (!child.work_done && !in_flight_clusters.count(child_id)) {
+            dropped_clusters.insert(child_id);
+            job_queue_active--;
+            ++swept;
+
+            node.resolved_children++;
+            node.children.erase(std::remove(node.children.begin(), node.children.end(), child_id), node.children.end());
+            yield_tree.erase(child_id);
+        }
+    }
+
+    if (swept > 0) {
+        logger.info("Swept " + std::to_string(swept) + " unprocessed children of aborted cluster " +
+            std::to_string(cluster_id));
+    }
+}
+
 // Estimate the cost of a cluster given node_count and edge_count
 float LoadBalancer::get_cost(int node_count, int edge_count) {
     float density = (2.0f * edge_count) / (node_count * (node_count - 1));
@@ -509,23 +763,36 @@ float LoadBalancer::get_cost(int node_count, int edge_count) {
 }
 
 // Estimate the cost of a cluster given cluster_info
-float LoadBalancer::get_cost(ClusterInfo& cluster_info) {
+float LoadBalancer::get_cost(const ClusterInfo& cluster_info) {
     return get_cost(cluster_info.node_count, cluster_info.edge_count);
 }
 
 // Save checkpoint - usually due to SIGTERM
+// Yielded children are ephemeral and not checkpointed. Their root ancestors
+// are saved instead, so on recovery the root is re-processed from scratch.
 void LoadBalancer::save_checkpoint() {
     std::string path = work_dir + "/checkpoint.csv";
     std::string tmp_path = path + ".tmp";   // tmp file containing incomplete results
     std::ofstream out(tmp_path);
     out << "cluster_id,node_count,edge_count\n";
-    for (const auto& c : unprocessed_clusters)
+    // Drain job_queue (save_checkpoint is called at termination, queue won't be reused)
+    int queued = 0;
+    while (!job_queue.empty()) {
+        ClusterInfo c = job_queue.top();
+        job_queue.pop();
+        if (dropped_clusters.erase(c.cluster_id)) continue;
+        // Skip yielded children (ephemeral; their root will be re-processed on recovery)
+        if (yield_tree.count(c.cluster_id) && yield_tree.at(c.cluster_id).parent_id != -1) continue;
         out << c.cluster_id << "," << c.node_count << "," << c.edge_count << "\n";
-    for (const auto& [k, c] : in_flight_clusters)
+        ++queued;
+    }
+    for (const auto& [k, c] : in_flight_clusters) {
+        // in_flight only contains roots (children are removed from in_flight on creation)
         out << c.cluster_id << "," << c.node_count << "," << c.edge_count << "\n";
+    }
     out.close();
     fs::rename(tmp_path, path);
-    logger.info("Checkpoint saved: " + std::to_string(unprocessed_clusters.size()) + " queued, "
+    logger.info("Checkpoint saved: " + std::to_string(queued) + " queued, "
                 + std::to_string(in_flight_clusters.size()) + " in-flight");
     logger.flush();  // Ensure log is written before the program is terminated
 }
@@ -537,7 +804,19 @@ bool LoadBalancer::load_checkpoint() {
 
     logger.info("Resuming from checkpoint: " + path);
 
-    unprocessed_clusters.clear();
+    // Clean up stale yield files from previous run (ephemeral, not recoverable)
+    std::string yield_dir = work_dir + "/yield";
+    if (fs::exists(yield_dir)) {
+        fs::remove_all(yield_dir);
+        logger.info("Cleaned up stale yield directory");
+    }
+
+    // Clear queue state
+    while (!job_queue.empty()) job_queue.pop();
+    job_queue_active = 0;
+    dropped_clusters.clear();
+    yield_tree.clear();  // yield tree is ephemeral, not recoverable from checkpoint
+
     std::ifstream in(path);
     std::string line;
     std::getline(in, line);
@@ -547,14 +826,10 @@ bool LoadBalancer::load_checkpoint() {
         std::getline(ss, cid, ',');
         std::getline(ss, nc, ',');
         std::getline(ss, ec, ',');
-        unprocessed_clusters.push_back({std::stoi(cid), std::stoi(nc), std::stoi(ec)});
+        job_queue.push({std::stoi(cid), std::stoi(nc), std::stoi(ec)});
+        job_queue_active++;
     }
 
-    std::sort(unprocessed_clusters.begin(), unprocessed_clusters.end(),
-        [this](const ClusterInfo& a, const ClusterInfo& b) {
-            return get_cost(a.node_count, a.edge_count) < get_cost(b.node_count, b.edge_count);
-        });
-
-    logger.info("Checkpoint loaded: " + std::to_string(unprocessed_clusters.size()) + " clusters to process");
+    logger.info("Checkpoint loaded: " + std::to_string(job_queue_active) + " clusters to process");
     return true;
 }

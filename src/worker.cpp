@@ -26,14 +26,21 @@ Worker::Worker(const std::string& method, Logger& logger, const std::string& wor
                const std::string& mincut_type, bool prune,
                int time_limit_per_cluster,
                int report_interval,
-               int num_processors)
+               int num_processors,
+               int yield_node_threshold)
     : method(method), logger(logger), work_dir(work_dir), clusters_dir(clusters_dir),
       algorithm(algorithm), clustering_parameter(clustering_parameter),
       log_level(log_level), connectedness_criterion(connectedness_criterion),
       mincut_type(mincut_type), prune(prune),
       time_limit_per_cluster(time_limit_per_cluster),
       report_interval(report_interval),
-      num_processors(num_processors) {}
+      num_processors(num_processors),
+      yield_node_threshold(yield_node_threshold) {
+    // Use rank-based offset for yield IDs to avoid collisions between workers
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    yield_id_counter = rank * 10000000; // TODO: find a better way to name yielded sub-clusters
+}
 
 // Main run function
 void Worker::run() {
@@ -82,16 +89,22 @@ void Worker::run() {
             logger.info("Received cluster " + std::to_string(cluster));
 
             // Process the cluster
-            bool success = process_cluster(cluster);
+            auto [success, yield_count] = process_cluster(cluster);
 
-            // Send completion status
+            // Send completion status: [cluster_id, yield_count]
+            // yield_count lets the LB know whether YIELD_REPORTs are in transit
+            // (they are always fully sent before this message, but may arrive out of order
+            // due to MPI cross-tag reordering).
             MessageType status_type = success ? MessageType::WORK_DONE : MessageType::WORK_ABORTED;
-            MPI_Send(&cluster, 1, MPI_INT, 0, to_int(status_type), MPI_COMM_WORLD);    // inform load balancer success / failure
+            int done_data[2] = {cluster, yield_count};
+            MPI_Send(done_data, 2, MPI_INT, 0, to_int(status_type), MPI_COMM_WORLD);
 
             if (success) {
-                logger.info("Completed cluster " + std::to_string(cluster));
+                logger.info("Completed cluster " + std::to_string(cluster) +
+                    " (yield_count=" + std::to_string(yield_count) + ")");
             } else {
-                logger.info("Aborted cluster " + std::to_string(cluster));
+                logger.info("Aborted cluster " + std::to_string(cluster) +
+                    " (yield_count=" + std::to_string(yield_count) + ")");
             }
         }
     }
@@ -170,7 +183,7 @@ void Worker::run() {
 }
 
 // Process a single cluster
-bool Worker::process_cluster(int cluster_id) {
+std::pair<bool, int> Worker::process_cluster(int cluster_id) {
     // TODO: implement actual cluster processing
     // For now, this is a placeholder that simulates work
 
@@ -179,22 +192,44 @@ bool Worker::process_cluster(int cluster_id) {
 
     std::string cluster_edgelist = clusters_dir + "/" + std::to_string(cluster_id) + ".bedgelist";
     if (!std::filesystem::exists(cluster_edgelist)) {
-        // Fallback to text format for backward compatibility
         cluster_edgelist = clusters_dir + "/" + std::to_string(cluster_id) + ".edgelist";
+    }
+    if (!std::filesystem::exists(cluster_edgelist)) {
+        // Yielded clusters live in work_dir/yield/ (ephemeral, not checkpointed)
+        cluster_edgelist = work_dir + "/yield/" + std::to_string(cluster_id) + ".bedgelist";
     }
     std::string cluster_clustering_file = clusters_dir + "/" + std::to_string(cluster_id) + ".bcluster";
     if (!std::filesystem::exists(cluster_clustering_file)) {
         cluster_clustering_file = clusters_dir + "/" + std::to_string(cluster_id) + ".cluster";
     }
+    if (!std::filesystem::exists(cluster_clustering_file)) {
+        cluster_clustering_file = work_dir + "/yield/" + std::to_string(cluster_id) + ".bcluster";
+    }
     logger.debug("Processing cluster file: " + cluster_edgelist);
+
+    // Set up yield pipe for this cluster (if yield is enabled)
+    // The yield directory is created on-demand by WriteYieldCluster only when a yield actually happens.
+    int yield_count = 0;  // number of sub-clusters directly yielded; incremented by yield monitor
+    std::string yield_dir;
+    int yield_pipe[2] = {-1, -1};
+    if (yield_node_threshold > 0) {
+        yield_dir = work_dir + "/yield/" + std::to_string(cluster_id);
+        if (pipe(yield_pipe) != 0) {
+            logger.error("Failed to create yield pipe for cluster " + std::to_string(cluster_id));
+            yield_pipe[0] = yield_pipe[1] = -1;
+        }
+    }
 
     logger.flush(); // to avoid duplicate logs after fork()
 
-    // TODO: spawn a child process and call CM processing logic on it
+    // Spawn a child process and call CM processing logic on it
     // This is to gracefully handle OOM kills
 
     int pid = fork();
     if (pid == 0) {  // child process
+        // Close read end of yield pipe (child only writes)
+        if (yield_pipe[0] >= 0) close(yield_pipe[0]);
+
         logger.info("Child process starts on cluster " + std::to_string(cluster_id));
 
         // Output file paths
@@ -210,11 +245,73 @@ bool Worker::process_cluster(int cluster_id) {
             cc = new MincutOnly(cluster_edgelist, cluster_clustering_file, this->num_processors, output_file, log_file, this->log_level, this->connectedness_criterion, this->mincut_type);
         }
 
+        // Configure yield if enabled
+        if (yield_node_threshold > 0) {
+            cc->set_yield_config(yield_dir, yield_node_threshold, yield_pipe[1]);
+        }
+
         cc->main();  // run constrained clustering
 
+        if (yield_pipe[1] >= 0) close(yield_pipe[1]);
         logger.info("Child process finishes cluster " + std::to_string(cluster_id));
         _exit(0);   // use _exit to avoid static destructor issues in forked process
     } else if (pid > 0) {    // control process
+        // Close write end of yield pipe (parent only reads)
+        if (yield_pipe[1] >= 0) close(yield_pipe[1]);
+
+        // Start yield monitor thread: reads yield notifications from the pipe
+        // and sends YIELD_REPORT to LB in real-time while the child is running.
+        std::thread yield_monitor;
+        if (yield_pipe[0] >= 0) {
+            yield_monitor = std::thread([&, pipe_read_fd = yield_pipe[0]]() {
+                int32_t record[3];  // [yield_id, node_count, edge_count]
+                while (true) {
+                    // Read exactly 12 bytes (one yield record)
+                    ssize_t total = 0;
+                    char* buf = reinterpret_cast<char*>(record);
+                    while (total < (ssize_t)sizeof(record)) {
+                        ssize_t n = ::read(pipe_read_fd, buf + total, sizeof(record) - total);
+                        if (n <= 0) goto monitor_done;  // EOF or error — child exited
+                        total += n;
+                    }
+
+                    int local_yield_id = record[0];
+                    int node_count = record[1];
+                    int edge_count = record[2];
+                    int global_id = yield_id_counter++;
+                    yield_count++;
+
+                    // Rename yield files to flat yield dir with global ID (ephemeral)
+                    std::string yield_base = work_dir + "/yield";
+                    std::string src_edgelist = yield_dir + "/" + std::to_string(local_yield_id) + ".bedgelist";
+                    std::string src_cluster = yield_dir + "/" + std::to_string(local_yield_id) + ".bcluster";
+                    std::string dst_edgelist = yield_base + "/" + std::to_string(global_id) + ".bedgelist";
+                    std::string dst_cluster = yield_base + "/" + std::to_string(global_id) + ".bcluster";
+
+                    try {
+                        fs::rename(src_edgelist, dst_edgelist);
+                        fs::rename(src_cluster, dst_cluster);
+                    } catch (const std::exception& e) {
+                        logger.error("Failed to move yield files for sub-cluster " +
+                            std::to_string(local_yield_id) + ": " + e.what());
+                        continue;
+                    }
+
+                    // Send YIELD_REPORT to LB: [parent_id, child_id, node_count, edge_count]
+                    int yield_data[4] = {cluster_id, global_id, node_count, edge_count};
+                    MPI_Send(yield_data, 4, MPI_INT, 0,
+                             to_int(MessageType::YIELD_REPORT), MPI_COMM_WORLD);
+
+                    logger.info("Yield (real-time): cluster " + std::to_string(cluster_id) +
+                        " sub-cluster " + std::to_string(local_yield_id) +
+                        " -> global ID " + std::to_string(global_id) +
+                        " (nodes=" + std::to_string(node_count) +
+                        ", edges=" + std::to_string(edge_count) + ")");
+                }
+                monitor_done:;
+            });
+        }
+
         int status;
         bool timed_out = false;
         struct rusage usage;
@@ -250,6 +347,18 @@ bool Worker::process_cluster(int cluster_id) {
             logger.flush();
         }
 
+        // Child has exited — pipe write end is closed.
+        // Wait for monitor thread to drain remaining data and exit.
+        if (yield_monitor.joinable()) {
+            yield_monitor.join();
+        }
+        if (yield_pipe[0] >= 0) close(yield_pipe[0]);
+
+        // Clean up yield directory
+        if (!yield_dir.empty() && fs::exists(yield_dir)) {
+            fs::remove_all(yield_dir);
+        }
+
         // Log and track peak memory usage
         int memory_mb = static_cast<int>(usage.ru_maxrss / 1024);
         logger.log("Cluster " + std::to_string(cluster_id) + " peak memory: " + std::to_string(memory_mb) + " MB");
@@ -259,22 +368,24 @@ bool Worker::process_cluster(int cluster_id) {
         if (timed_out) {
             logger.log("Timeout. Child was killed after " + std::to_string(time_limit_per_cluster) + " seconds");
             ++report.timeout_count;
-            return false;
+            return {false, yield_count};
         }
 
         // Check how child terminated
+        bool success;
         if (WIFEXITED(status)) {
             logger.log("Child exited with code: " + std::to_string(WEXITSTATUS(status)));
-            return WEXITSTATUS(status) == 0;
+            success = (WEXITSTATUS(status) == 0);
         } else {
             logger.log("Child killed by signal: " + std::to_string(WTERMSIG(status)));
             if (WTERMSIG(status) == SIGKILL)
                 ++report.oom_count;  // SIGKILL without timeout is likely OOM
-            return false;
+            success = false;
         }
+        return {success, yield_count};
     } else {
         logger.log("Fork failed");  // TODO: this is serious. Need explicit handling
     }
 
-    return false;   // fallback to false
+    return {false, 0};   // fallback
 }
