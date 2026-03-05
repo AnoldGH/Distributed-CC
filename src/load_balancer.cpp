@@ -243,8 +243,16 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
     // Write out cluster files to output_dir
     logger.info("Writing cluster files to " + output_dir);
     int files_written = 0;
+
+    float accumulated_cost = 0;
+    ClusterInfo batch_head_cluster_info{};
+    std::string output_edgelist;
+    std::string output_cluster_file;
+    std::vector<std::pair<int, int>> batch_edges;
+    std::vector<std::pair<int, int>> batch_cluster_entries;  // (node_id, cluster_id)
     for (auto& [cluster_id, cluster_info] : clusters) {
         int edge_count = cluster_edges[cluster_id].size();
+        cluster_info.edge_count = edge_count;
 
         // Clique bypass
         if (auto_accept_clique && is_clique(cluster_info)) {
@@ -255,18 +263,47 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
         if (edge_count == 0 || cluster_info.node_count < drop_cluster_under) {
             continue;  // cluster is completely disconnected, pass
         }
-        cluster_info.edge_count = edge_count;
 
-        std::string filename = output_dir + "/" + std::to_string(cluster_id) + ".bedgelist";
-        std::string cluster_filename = output_dir + "/" + std::to_string(cluster_id) + ".bcluster";
+        // Batch very small clusters together, by min_batch_size
+        if (accumulated_cost == 0) {    // make new file only when we start to form a batch
+            batch_head_cluster_info = ClusterInfo{};
+            batch_head_cluster_info.cluster_id = cluster_id;    // form new batch head cluster
 
-        // Write binary edgelist
-        write_binary_edgelist(filename, cluster_edges[cluster_id]);
+            output_edgelist = output_dir + "/" + std::to_string(cluster_id) + ".bedgelist";
+            output_cluster_file = output_dir + "/" + std::to_string(cluster_id) + ".bcluster";
 
-        // Write binary cluster file
-        write_binary_cluster(cluster_filename, cluster_to_node[cluster_id], cluster_id);
-        files_written++;
-        created_clusters.emplace_back(cluster_info);  // Track this cluster
+            batch_edges.clear();
+            batch_cluster_entries.clear();
+        }
+
+        accumulated_cost += get_cost(cluster_info);
+        batch_head_cluster_info.node_count += cluster_info.node_count;
+        batch_head_cluster_info.edge_count += cluster_info.edge_count;
+
+        // Accumulate edges and cluster entries for this cluster
+        batch_edges.insert(batch_edges.end(),
+                           cluster_edges[cluster_id].begin(),
+                           cluster_edges[cluster_id].end());
+        for (int node : cluster_to_node[cluster_id]) {
+            batch_cluster_entries.emplace_back(node, cluster_id);
+        }
+
+        // Check if batch formation is completed
+        if (accumulated_cost >= this->min_batch_cost) {
+            accumulated_cost = 0;
+            write_binary_edgelist(output_edgelist, batch_edges);
+            write_binary_cluster(output_cluster_file, batch_cluster_entries);
+            ++files_written;
+            created_clusters.emplace_back(batch_head_cluster_info);
+        }
+    }
+
+    // Flush remaining batch that didn't reach min_batch_cost
+    if (accumulated_cost > 0) {
+        write_binary_edgelist(output_edgelist, batch_edges);
+        write_binary_cluster(output_cluster_file, batch_cluster_entries);
+        ++files_written;
+        created_clusters.emplace_back(batch_head_cluster_info);
     }
 
     // Write summary file for quicker load
@@ -276,8 +313,9 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
     for (const auto& cluster : created_clusters)
         out_summary << cluster.cluster_id << "," << cluster.node_count << "," << cluster.edge_count << "\n";
 
-    logger.info("partition_clustering completed successfully. Wrote " +
-               std::to_string(files_written) + " cluster files");
+    logger.info("partition_clustering completed successfully. " +
+               std::to_string(clusters.size()) + " clusters written to " +
+               std::to_string(files_written) + " batched files");
 
     return created_clusters;
 }

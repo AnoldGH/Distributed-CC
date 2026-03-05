@@ -63,6 +63,22 @@ inline void write_binary_cluster(const std::string& filepath,
     }
 }
 
+inline void write_binary_cluster(const std::string& filepath,
+                                 const std::vector<std::pair<int, int>>& entries) {
+    std::ofstream out(filepath, std::ios::binary);
+    if (!out.is_open()) {
+        throw std::runtime_error("Failed to open binary cluster for writing: " + filepath);
+    }
+    uint32_t num_entries = static_cast<uint32_t>(entries.size());
+    out.write(reinterpret_cast<const char*>(&num_entries), sizeof(num_entries));
+    for (const auto& [node_id, cluster_id] : entries) {
+        int32_t n = static_cast<int32_t>(node_id);
+        int32_t c = static_cast<int32_t>(cluster_id);
+        out.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        out.write(reinterpret_cast<const char*>(&c), sizeof(c));
+    }
+}
+
 // Broadcast a string
 inline void bcast_string(std::string& s, int root, MPI_Comm comm) {
     int rank;
