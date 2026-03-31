@@ -75,7 +75,7 @@ void Worker::run() {
         int count;
         MPI_Get_count(&status, MPI_INT, &count);
 
-        // Resize vector and receive assigned clusters
+        // Receive [cluster_id, is_yielded] pairs from load balancer
         std::vector<int> assigned_clusters(count);
         MPI_Recv(assigned_clusters.data(), count, MPI_INT, 0, to_int(MessageType::DISTRIBUTE_WORK), MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
@@ -85,11 +85,14 @@ void Worker::run() {
             break;
         }
 
-        for (const auto& cluster : assigned_clusters) {
-            logger.info("Received cluster " + std::to_string(cluster));
+        for (int i = 0; i < count; i += 2) {
+            int cluster = assigned_clusters[i];
+            bool is_yielded = assigned_clusters[i + 1] != 0;
+            logger.info("Received cluster " + std::to_string(cluster) +
+                (is_yielded ? " (yielded)" : ""));
 
             // Process the cluster
-            auto [success, yield_count] = process_cluster(cluster);
+            auto [success, yield_count] = process_cluster(cluster, is_yielded);
 
             // Send completion status: [cluster_id, yield_count]
             // yield_count lets the LB know whether YIELD_REPORTs are in transit
@@ -183,7 +186,7 @@ void Worker::run() {
 }
 
 // Process a single cluster
-std::pair<bool, int> Worker::process_cluster(int cluster_id) {
+std::pair<bool, int> Worker::process_cluster(int cluster_id, bool is_yielded) {
     // TODO: implement actual cluster processing
     // For now, this is a placeholder that simulates work
 
@@ -232,8 +235,12 @@ std::pair<bool, int> Worker::process_cluster(int cluster_id) {
 
         logger.info("Child process starts on cluster " + std::to_string(cluster_id));
 
-        // Output file paths
-        std::string output_file = work_dir + "/output/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".output";
+        // Output file paths: yielded clusters and yield-eligible roots write to yield/
+        // so that partial results are never visible to worker-level aggregation.
+        // If the cluster turns out not to yield, we move it back after the child exits.
+        std::string output_file = (is_yielded || yield_node_threshold > 0)
+            ? work_dir + "/yield/" + std::to_string(cluster_id) + ".output"
+            : work_dir + "/output/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".output";
         std::string history_file = work_dir + "/history/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".hist";
         std::string log_file = work_dir + "/logs/clusters/" + std::to_string(cluster_id) + ".log"; // TODO: since CC was built as a standalone app with its own logging system, we have to use a different file. In the future we should try to integrate the two systems into one unified logging system.
 
@@ -382,6 +389,18 @@ std::pair<bool, int> Worker::process_cluster(int cluster_id) {
                 ++report.oom_count;  // SIGKILL without timeout is likely OOM
             success = false;
         }
+
+        // If a yield-eligible root didn't actually yield, move its output back
+        // to the normal output dir for worker-level aggregation.
+        if (!is_yielded && yield_node_threshold > 0 && yield_count == 0) {
+            std::string src = work_dir + "/yield/" + std::to_string(cluster_id) + ".output";
+            std::string dst = work_dir + "/output/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".output";
+            if (fs::exists(src)) {
+                fs::rename(src, dst);
+                logger.info("Moved non-yielding root output back to output/ (cluster " + std::to_string(cluster_id) + ")");
+            }
+        }
+
         return {success, yield_count};
     } else {
         logger.log("Fork failed");  // TODO: this is serious. Need explicit handling

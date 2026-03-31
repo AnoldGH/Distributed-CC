@@ -15,6 +15,12 @@ struct ClusterInfo {
     int edge_count;     // number of edges
 };
 
+// Per-cluster assignment payload sent to workers via DISTRIBUTE_WORK.
+struct AssignedCluster {
+    int cluster_id;
+    int is_yielded;     // 1 if this cluster is a yielded sub-cluster, 0 otherwise
+};
+
 // Tree node for tracking hierarchical yield dependencies.
 // Each node represents a cluster that may yield sub-clusters during processing.
 // A parent is considered resolved when:
@@ -67,6 +73,11 @@ private:
     // Roots (parent_id == -1) stay in in_flight_clusters until fully resolved.
     // Children are tracked only in yield_tree (removed from in_flight on creation).
     std::unordered_map<int, YieldNode> yield_tree;
+
+    // Persistent mapping: yielded cluster_id → root cluster_id.
+    // Unlike yield_tree, this is never erased during resolution, so the LB
+    // can determine ownership at aggregation time.
+    std::unordered_map<int, int> yield_to_root;
 
     /**
      * Shared logic for WORK_DONE and WORK_ABORTED: handles yield tree tracking,

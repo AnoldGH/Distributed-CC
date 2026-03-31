@@ -29,7 +29,7 @@ private:
      * Returns {success, yield_count} where yield_count is the number of
      * sub-clusters directly yielded by this cluster's child process.
      */
-    std::pair<bool, int> process_cluster(int cluster_id);
+    std::pair<bool, int> process_cluster(int cluster_id, bool is_yielded);
 
 public:
     Worker(const std::string& method, Logger& logger, const std::string& work_dir,

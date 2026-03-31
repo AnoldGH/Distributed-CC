@@ -370,7 +370,7 @@ void LoadBalancer::initialize_job_queue(const std::vector<ClusterInfo>& created_
 // Pop clusters from job_queue (skipping dropped entries), batch up to min_batch_cost,
 // assign to worker_rank via MPI. Returns true if work was assigned.
 bool LoadBalancer::assign_batch(int worker_rank) {
-    std::vector<int> assign_clusters;
+    std::vector<AssignedCluster> assign_clusters;
     float batch_cost = 0;
 
     while (!job_queue.empty() && batch_cost < min_batch_cost) {
@@ -383,7 +383,8 @@ bool LoadBalancer::assign_batch(int worker_rank) {
         }
 
         job_queue_active--;
-        assign_clusters.push_back(cluster_info.cluster_id);
+        int is_yielded = yield_to_root.count(cluster_info.cluster_id) ? 1 : 0;
+        assign_clusters.push_back({cluster_info.cluster_id, is_yielded});
         in_flight_clusters[cluster_info.cluster_id] = cluster_info;
 
         float cost = get_cost(cluster_info);
@@ -392,7 +393,8 @@ bool LoadBalancer::assign_batch(int worker_rank) {
         logger.info("Assigning cluster " + std::to_string(cluster_info.cluster_id) +
             " (nodes: " + std::to_string(cluster_info.node_count) +
             ", edges: " + std::to_string(cluster_info.edge_count) +
-            ", estimated cost: " + std::to_string(cost) + ")" +
+            ", estimated cost: " + std::to_string(cost) +
+            ", yielded: " + std::to_string(is_yielded) + ")" +
             " to worker " + std::to_string(worker_rank) +
             " (" + std::to_string(job_queue_active) + " jobs remaining)");
 
@@ -401,7 +403,8 @@ bool LoadBalancer::assign_batch(int worker_rank) {
 
     if (assign_clusters.empty()) return false;
 
-    MPI_Send(assign_clusters.data(), assign_clusters.size(), MPI_INT, worker_rank,
+    // Send as flat int array: [cluster_id, is_yielded, cluster_id, is_yielded, ...]
+    MPI_Send(assign_clusters.data(), assign_clusters.size() * 2, MPI_INT, worker_rank,
              to_int(MessageType::DISTRIBUTE_WORK), MPI_COMM_WORLD);
     return true;
 }
@@ -471,6 +474,12 @@ void LoadBalancer::run() {
             // Create child node in yield_tree
             yield_tree[child_id] = {child_id, parent_id, false, false, 0, 0, {}};
             parent_node.children.push_back(child_id);
+
+            // Track yielded cluster → root mapping (persistent across resolution)
+            int root = parent_id;
+            while (yield_tree.count(root) && yield_tree[root].parent_id != -1)
+                root = yield_tree[root].parent_id;
+            yield_to_root[child_id] = root;
 
             // Add child to queue
             ClusterInfo yielded = {child_id, node_count, edge_count};
@@ -596,6 +605,27 @@ void LoadBalancer::run() {
     for (int worker_rank = first_worker; worker_rank < size; ++worker_rank) {
         std::string worker_output_file = clusters_output_dir + "worker_" + std::to_string(worker_rank) + ".out";
         aggregate_file(worker_output_file, "worker " + std::to_string(worker_rank));
+    }
+
+    // Aggregate yielded cluster outputs (only for non-aborted roots)
+    std::string yield_dir = work_dir + "/yield";
+    if (fs::exists(yield_dir)) {
+        for (const auto& entry : fs::directory_iterator(yield_dir)) {
+            if (!entry.is_regular_file() || entry.path().extension() != ".output") continue;
+            int cluster_id = std::stoi(entry.path().stem());
+            // Skip outputs belonging to aborted root clusters
+            if (yield_to_root.count(cluster_id) && aborted_clusters.count(yield_to_root[cluster_id])) {
+                logger.info("Skipping yield output for cluster " + std::to_string(cluster_id) +
+                    " (root " + std::to_string(yield_to_root[cluster_id]) + " aborted)");
+                continue;
+            }
+            // Root cluster that yielded: check if the root itself is aborted
+            if (aborted_clusters.count(cluster_id)) {
+                logger.info("Skipping yield output for aborted root cluster " + std::to_string(cluster_id));
+                continue;
+            }
+            aggregate_file(entry.path().string(), "yield " + std::to_string(cluster_id));
+        }
     }
 
     logger.info("Program-level output aggregation completed.");
@@ -786,12 +816,6 @@ void LoadBalancer::sweep_aborted_descendants(int cluster_id) {
     YieldNode& node = yield_tree[cluster_id];
     int swept = 0;
 
-    // TODO: in the current model, this should also abort the root-level cluster
-    //  this is actually buggy; we don't explicitly remove processed "portions" of any clusters, so they will still be aggregated, which creates
-    //  partially processed clusters in the output and is not correct. The easier way to fix this: make sure the root cluster is put in yield/ directory before being moved to output/. Then we can make
-    //  sure workers don't aggregate them unless everything finished - at which point we move them to output/. This can be done by the
-    //  load balancer; it should have very low costs (but I am not exactly sure).
-
     // Copy children list since we modify it
     std::vector<int> children_copy = node.children;
     for (int child_id : children_copy) {
@@ -886,6 +910,7 @@ bool LoadBalancer::load_checkpoint() {
     dropped_clusters.clear();
     aborted_clusters.clear();
     yield_tree.clear();  // yield tree is ephemeral, not recoverable from checkpoint
+    yield_to_root.clear();
 
     std::ifstream in(path);
     std::string line;
