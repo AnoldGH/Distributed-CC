@@ -58,6 +58,7 @@ private:
     int job_queue_active = 0;                                   // non-dropped clusters in job_queue
     std::unordered_set<int> dropped_clusters;                   // lazy deletion set for aborted descendants
 
+    std::unordered_map<int, ClusterInfo> aborted_clusters;      // Aborted clusters - note that these only include root-level clusters
     std::unordered_map<int, ClusterInfo> in_flight_clusters;    // Clusters that are assigned but not yet completed - map for quicker lookup
     std::unordered_map<int, WorkerReport> worker_reports;       // Latest cumulative report per worker rank
 

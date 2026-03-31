@@ -642,8 +642,13 @@ bool LoadBalancer::handle_cluster_completion(int cluster_id, std::vector<int>& p
 
     // Simple case: no yields and not already in yield_tree (never yielded, never was yielded)
     if (yield_count == 0 && !yield_tree.count(cluster_id)) {
+        if (aborted) {
+            aborted_clusters[cluster_id] = in_flight_clusters[cluster_id];
+            logger.info("Cluster " + std::to_string(cluster_id) + " aborted (simple, no yields)");
+        } else {
+            logger.info("Cluster " + std::to_string(cluster_id) + " completed (simple, no yields)");
+        }
         in_flight_clusters.erase(cluster_id);
-        logger.info("Cluster " + std::to_string(cluster_id) + " completed (simple, no yields)");
 
         // Deferred termination check
         if (job_queue_active == 0 && in_flight_clusters.empty() && !pending_work_requests.empty()) {
@@ -684,6 +689,17 @@ bool LoadBalancer::handle_cluster_completion(int cluster_id, std::vector<int>& p
     // mark in-flight children for discard
     if (aborted) {
         sweep_aborted_descendants(cluster_id);
+
+        // Find the root of this cluster's yield tree and mark it as aborted
+        int root = cluster_id;
+        while (yield_tree.count(root) && yield_tree[root].parent_id != -1) {
+            root = yield_tree[root].parent_id;
+        }
+        if (!aborted_clusters.count(root) && in_flight_clusters.count(root)) {
+            aborted_clusters[root] = in_flight_clusters[root];
+            logger.info("Root cluster " + std::to_string(root) +
+                " marked as aborted (triggered by descendant " + std::to_string(cluster_id) + ")");
+        }
     }
 
     // Attempt resolution (may cascade upward)
@@ -770,6 +786,12 @@ void LoadBalancer::sweep_aborted_descendants(int cluster_id) {
     YieldNode& node = yield_tree[cluster_id];
     int swept = 0;
 
+    // TODO: in the current model, this should also abort the root-level cluster
+    //  this is actually buggy; we don't explicitly remove processed "portions" of any clusters, so they will still be aggregated, which creates
+    //  partially processed clusters in the output and is not correct. The easier way to fix this: make sure the root cluster is put in yield/ directory before being moved to output/. Then we can make
+    //  sure workers don't aggregate them unless everything finished - at which point we move them to output/. This can be done by the
+    //  load balancer; it should have very low costs (but I am not exactly sure).
+
     // Copy children list since we modify it
     std::vector<int> children_copy = node.children;
     for (int child_id : children_copy) {
@@ -828,10 +850,19 @@ void LoadBalancer::save_checkpoint() {
         // in_flight only contains roots (children are removed from in_flight on creation)
         out << c.cluster_id << "," << c.node_count << "," << c.edge_count << "\n";
     }
+    for (const auto& [k, c] : aborted_clusters) {
+        // Aborted root clusters whose yield trees have already resolved and been erased
+        // (so they are no longer in in_flight_clusters). They must be re-processed on recovery.
+        if (!in_flight_clusters.count(k)) {
+            out << c.cluster_id << "," << c.node_count << "," << c.edge_count << "\n";
+        }
+    }
+
     out.close();
     fs::rename(tmp_path, path);
     logger.info("Checkpoint saved: " + std::to_string(queued) + " queued, "
-                + std::to_string(in_flight_clusters.size()) + " in-flight");
+                + std::to_string(in_flight_clusters.size()) + " in-flight"
+                + ", " + std::to_string(aborted_clusters.size()) + " aborted");
     logger.flush();  // Ensure log is written before the program is terminated
 }
 
@@ -853,6 +884,7 @@ bool LoadBalancer::load_checkpoint() {
     while (!job_queue.empty()) job_queue.pop();
     job_queue_active = 0;
     dropped_clusters.clear();
+    aborted_clusters.clear();
     yield_tree.clear();  // yield tree is ephemeral, not recoverable from checkpoint
 
     std::ifstream in(path);
