@@ -49,9 +49,10 @@ void Worker::run() {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    // Create needed directory
+    // Create needed directories
     fs::create_directories(work_dir + "/output/worker_" + std::to_string(rank) + "/");
     fs::create_directories(work_dir + "/history/worker_" + std::to_string(rank) + "/");
+    fs::create_directories(work_dir + "/yield/");
 
     // Worker main loop
     int request_count = 0;
