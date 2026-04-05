@@ -8,6 +8,10 @@
 #include <fstream>
 #include <filesystem>
 #include <stdexcept>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 namespace fs = std::filesystem;
 
 // Constructor
@@ -150,37 +154,86 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
 
     int clustering_lines = 0;
     if (is_binary_cluster(cluster_file)) {
-        std::ifstream clustering_stream(cluster_file, std::ios::binary);
-        if (!clustering_stream.is_open()) {
+        int fd = open(cluster_file.c_str(), O_RDONLY);
+        if (fd < 0) {
             logger.error("Failed to open clustering file: " + cluster_file);
             throw std::runtime_error("Failed to open clustering file: " + cluster_file);
         }
+        struct stat st;
+        fstat(fd, &st);
+        void* mapped = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+        if (mapped == MAP_FAILED) {
+            close(fd);
+            throw std::runtime_error("mmap failed for clustering file: " + cluster_file);
+        }
+        madvise(mapped, st.st_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+
+        const char* data = static_cast<const char*>(mapped);
         uint32_t num_entries;
-        clustering_stream.read(reinterpret_cast<char*>(&num_entries), sizeof(num_entries));
+        memcpy(&num_entries, data, sizeof(num_entries));
+        const int32_t* pairs = reinterpret_cast<const int32_t*>(data + sizeof(num_entries));
         for (uint32_t i = 0; i < num_entries; ++i) {
-            int32_t node_id, cluster_id;
-            clustering_stream.read(reinterpret_cast<char*>(&node_id), sizeof(node_id));
-            clustering_stream.read(reinterpret_cast<char*>(&cluster_id), sizeof(cluster_id));
+            add_cluster_entry(pairs[i * 2], pairs[i * 2 + 1]);
+            clustering_lines++;
+        }
+
+        munmap(mapped, st.st_size);
+        close(fd);
+    } else {
+        int fd = open(cluster_file.c_str(), O_RDONLY);
+        if (fd < 0) {
+            logger.error("Failed to open clustering file: " + cluster_file);
+            throw std::runtime_error("Failed to open clustering file: " + cluster_file);
+        }
+        struct stat st;
+        fstat(fd, &st);
+        void* mapped = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+        if (mapped == MAP_FAILED) {
+            close(fd);
+            throw std::runtime_error("mmap failed for clustering file: " + cluster_file);
+        }
+        madvise(mapped, st.st_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+
+        const char* data = static_cast<const char*>(mapped);
+        const char* end = data + st.st_size;
+        char cluster_delimiter = get_delimiter(cluster_file);
+
+        // Skip header line
+        while (data < end && *data != '\n') ++data;
+        if (data < end) ++data;
+
+        while (data < end) {
+            // Parse node_id
+            int node_id = 0;
+            bool neg = false;
+            if (data < end && *data == '-') { neg = true; ++data; }
+            while (data < end && *data >= '0' && *data <= '9') {
+                node_id = node_id * 10 + (*data - '0');
+                ++data;
+            }
+            if (neg) node_id = -node_id;
+            if (data < end && *data == cluster_delimiter) ++data;
+
+            // Parse cluster_id
+            int cluster_id = 0;
+            neg = false;
+            if (data < end && *data == '-') { neg = true; ++data; }
+            while (data < end && *data >= '0' && *data <= '9') {
+                cluster_id = cluster_id * 10 + (*data - '0');
+                ++data;
+            }
+            if (neg) cluster_id = -cluster_id;
+
+            // Skip to next line
+            while (data < end && *data != '\n') ++data;
+            if (data < end) ++data;
+
             add_cluster_entry(node_id, cluster_id);
             clustering_lines++;
         }
-    } else {
-        char cluster_delimiter = get_delimiter(cluster_file);
-        std::ifstream clustering_stream(cluster_file);
-        if (!clustering_stream.is_open()) {
-            logger.error("Failed to open clustering file: " + cluster_file);
-            throw std::runtime_error("Failed to open clustering file: " + cluster_file);
-        }
-        std::string line;
-        std::getline(clustering_stream, line); // Skip header
-        while (std::getline(clustering_stream, line)) {
-            std::stringstream ss(line);
-            std::string node_str, cluster_str;
-            std::getline(ss, node_str, cluster_delimiter);
-            std::getline(ss, cluster_str, cluster_delimiter);
-            add_cluster_entry(std::stoi(node_str), std::stoi(cluster_str));
-            clustering_lines++;
-        }
+
+        munmap(mapped, st.st_size);
+        close(fd);
     }
     logger.debug("Read " + std::to_string(clustering_lines) + " nodes in " +
                 std::to_string(clusters.size()) + " clusters");
@@ -207,35 +260,84 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
     };
 
     if (is_binary_edgelist(edgelist)) {
-        std::ifstream edgelist_stream(edgelist, std::ios::binary);
-        if (!edgelist_stream.is_open()) {
+        int fd = open(edgelist.c_str(), O_RDONLY);
+        if (fd < 0) {
             logger.error("Failed to open edgelist file: " + edgelist);
             throw std::runtime_error("Failed to open edgelist file: " + edgelist);
         }
+        struct stat st;
+        fstat(fd, &st);
+        void* mapped = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+        if (mapped == MAP_FAILED) {
+            close(fd);
+            throw std::runtime_error("mmap failed for edgelist file: " + edgelist);
+        }
+        madvise(mapped, st.st_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+
+        const char* data = static_cast<const char*>(mapped);
         uint64_t num_edges;
-        edgelist_stream.read(reinterpret_cast<char*>(&num_edges), sizeof(num_edges));
+        memcpy(&num_edges, data, sizeof(num_edges));
+        const int32_t* pairs = reinterpret_cast<const int32_t*>(data + sizeof(num_edges));
         for (uint64_t i = 0; i < num_edges; ++i) {
-            int32_t source, target;
-            edgelist_stream.read(reinterpret_cast<char*>(&source), sizeof(source));
-            edgelist_stream.read(reinterpret_cast<char*>(&target), sizeof(target));
+            add_edge(pairs[i * 2], pairs[i * 2 + 1]);
+        }
+
+        munmap(mapped, st.st_size);
+        close(fd);
+    } else {
+        int fd = open(edgelist.c_str(), O_RDONLY);
+        if (fd < 0) {
+            logger.error("Failed to open edgelist file: " + edgelist);
+            throw std::runtime_error("Failed to open edgelist file: " + edgelist);
+        }
+        struct stat st;
+        fstat(fd, &st);
+        void* mapped = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+        if (mapped == MAP_FAILED) {
+            close(fd);
+            throw std::runtime_error("mmap failed for edgelist file: " + edgelist);
+        }
+        madvise(mapped, st.st_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+
+        const char* data = static_cast<const char*>(mapped);
+        const char* end = data + st.st_size;
+        char edgelist_delimiter = get_delimiter(edgelist);
+
+        // Skip header line
+        while (data < end && *data != '\n') ++data;
+        if (data < end) ++data;
+
+        while (data < end) {
+            // Parse source
+            int source = 0;
+            bool neg = false;
+            if (data < end && *data == '-') { neg = true; ++data; }
+            while (data < end && *data >= '0' && *data <= '9') {
+                source = source * 10 + (*data - '0');
+                ++data;
+            }
+            if (neg) source = -source;
+            if (data < end && *data == edgelist_delimiter) ++data;
+
+            // Parse target
+            int target = 0;
+            neg = false;
+            if (data < end && *data == '-') { neg = true; ++data; }
+            while (data < end && *data >= '0' && *data <= '9') {
+                target = target * 10 + (*data - '0');
+                ++data;
+            }
+            if (neg) target = -target;
+
+            // Skip to next line
+            while (data < end && *data != '\n') ++data;
+            if (data < end) ++data;
+
             add_edge(source, target);
         }
-    } else {
-        char edgelist_delimiter = get_delimiter(edgelist);
-        std::ifstream edgelist_stream(edgelist);
-        if (!edgelist_stream.is_open()) {
-            logger.error("Failed to open edgelist file: " + edgelist);
-            throw std::runtime_error("Failed to open edgelist file: " + edgelist);
-        }
-        std::string line;
-        std::getline(edgelist_stream, line); // Skip header
-        while (std::getline(edgelist_stream, line)) {
-            std::stringstream ss(line);
-            std::string source_str, target_str;
-            std::getline(ss, source_str, edgelist_delimiter);
-            std::getline(ss, target_str, edgelist_delimiter);
-            add_edge(std::stoi(source_str), std::stoi(target_str));
-        }
+
+        munmap(mapped, st.st_size);
+        close(fd);
     }
     logger.debug("Read " + std::to_string(total_edges) + " edges, " +
                 std::to_string(intra_cluster_edges) + " intra-cluster edges");
