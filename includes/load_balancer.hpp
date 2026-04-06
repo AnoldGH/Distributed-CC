@@ -7,12 +7,13 @@
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
+#include <cstdint>
 
 // Records information of clusters to be assigned. Used to estimate cost and determine priority, etc.
 struct ClusterInfo {
     int cluster_id;
     int node_count;     // number of nodes
-    int edge_count;     // number of edges
+    int64_t edge_count; // number of edges
 };
 
 // Per-cluster assignment payload sent to workers via DISTRIBUTE_WORK.
@@ -172,7 +173,7 @@ public:
     /**
      * Estimate the cost of processing a cluster
      */
-    float get_cost(int node_count, int edge_count);
+    float get_cost(int node_count, int64_t edge_count);
 
     /**
      * Estimate the cost of processing a cluster given cluster_info

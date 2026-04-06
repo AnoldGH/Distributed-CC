@@ -82,8 +82,8 @@ LoadBalancer::LoadBalancer(const std::string& method,
 }
 
 /** Helper methods */
-bool is_clique(int node_count, int edge_count) {
-    return ((node_count * (node_count - 1)) / 2) == edge_count;
+bool is_clique(int node_count, int64_t edge_count) {
+    return ((int64_t)node_count * (node_count - 1) / 2) == edge_count;
 }
 
 bool is_clique(ClusterInfo& cluster_info) {
@@ -190,8 +190,8 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
 
     // Read edgelist and partition edges
     logger.debug("Reading edgelist file...");
-    int total_edges = 0;
-    int intra_cluster_edges = 0;
+    int64_t total_edges = 0;
+    int64_t intra_cluster_edges = 0;
 
     auto add_edge = [&](int source, int target) {
         total_edges++;
@@ -212,9 +212,9 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
             logger.error("Failed to open edgelist file: " + edgelist);
             throw std::runtime_error("Failed to open edgelist file: " + edgelist);
         }
-        uint32_t num_edges;
+        uint64_t num_edges;
         edgelist_stream.read(reinterpret_cast<char*>(&num_edges), sizeof(num_edges));
-        for (uint32_t i = 0; i < num_edges; ++i) {
+        for (uint64_t i = 0; i < num_edges; ++i) {
             int32_t source, target;
             edgelist_stream.read(reinterpret_cast<char*>(&source), sizeof(source));
             edgelist_stream.read(reinterpret_cast<char*>(&target), sizeof(target));
@@ -251,7 +251,7 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
     std::vector<std::pair<int, int>> batch_edges;
     std::vector<std::pair<int, int>> batch_cluster_entries;  // (node_id, cluster_id)
     for (auto& [cluster_id, cluster_info] : clusters) {
-        int edge_count = cluster_edges[cluster_id].size();
+        int64_t edge_count = cluster_edges[cluster_id].size();
         cluster_info.edge_count = edge_count;
 
         // Clique bypass
@@ -342,7 +342,7 @@ std::vector<ClusterInfo> LoadBalancer::load_partitioned_clusters(const std::stri
         ClusterInfo cluster_info;
         cluster_info.cluster_id = std::stoi(cluster_id);
         cluster_info.node_count = std::stoi(node_count);
-        cluster_info.edge_count = std::stoi(edge_count);
+        cluster_info.edge_count = std::stoll(edge_count);
 
         clusters.push_back(cluster_info);
 
@@ -441,16 +441,15 @@ void LoadBalancer::run() {
             continue;
         }
 
-        // Yield report: 4-int message [parent_id, child_id, node_count, edge_count]
-        // Sent in real-time as the child process yields sub-clusters
+        // Yield report: {parent_id, child_id, node_count, edge_count} sent as raw bytes
         if (message_type == MessageType::YIELD_REPORT) {
-            int yield_data[4];
-            MPI_Recv(yield_data, 4, MPI_INT, worker_rank, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            struct { int parent_id; int child_id; int node_count; int64_t edge_count; } yield_data;
+            MPI_Recv(&yield_data, sizeof(yield_data), MPI_BYTE, worker_rank, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-            int parent_id = yield_data[0];
-            int child_id = yield_data[1];
-            int node_count = yield_data[2];
-            int edge_count = yield_data[3];
+            int parent_id = yield_data.parent_id;
+            int child_id = yield_data.child_id;
+            int node_count = yield_data.node_count;
+            int64_t edge_count = yield_data.edge_count;
 
             // Ensure parent exists in yield_tree (may not if WORK_DONE hasn't arrived yet).
             // Create as root (parent_id=-1) if this is an original cluster.
@@ -841,8 +840,8 @@ void LoadBalancer::sweep_aborted_descendants(int cluster_id) {
 }
 
 // Estimate the cost of a cluster given node_count and edge_count
-float LoadBalancer::get_cost(int node_count, int edge_count) {
-    float density = (2.0f * edge_count) / (node_count * (node_count - 1));
+float LoadBalancer::get_cost(int node_count, int64_t edge_count) {
+    double density = (2.0 * edge_count) / ((double)node_count * (node_count - 1));
     return node_count + (1.0f / density);
 }
 
@@ -921,7 +920,7 @@ bool LoadBalancer::load_checkpoint() {
         std::getline(ss, cid, ',');
         std::getline(ss, nc, ',');
         std::getline(ss, ec, ',');
-        job_queue.push({std::stoi(cid), std::stoi(nc), std::stoi(ec)});
+        job_queue.push({std::stoi(cid), std::stoi(nc), std::stoll(ec)});
         job_queue_active++;
     }
 

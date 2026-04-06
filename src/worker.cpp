@@ -272,20 +272,20 @@ std::pair<bool, int> Worker::process_cluster(int cluster_id, bool is_yielded) {
         std::thread yield_monitor;
         if (yield_pipe[0] >= 0) {
             yield_monitor = std::thread([&, pipe_read_fd = yield_pipe[0]]() {
-                int32_t record[3];  // [yield_id, node_count, edge_count]
+                struct { int32_t yield_id; int32_t node_count; int64_t edge_count; } record;
                 while (true) {
-                    // Read exactly 12 bytes (one yield record)
+                    // Read one yield record
                     ssize_t total = 0;
-                    char* buf = reinterpret_cast<char*>(record);
+                    char* buf = reinterpret_cast<char*>(&record);
                     while (total < (ssize_t)sizeof(record)) {
                         ssize_t n = ::read(pipe_read_fd, buf + total, sizeof(record) - total);
                         if (n <= 0) goto monitor_done;  // EOF or error — child exited
                         total += n;
                     }
 
-                    int local_yield_id = record[0];
-                    int node_count = record[1];
-                    int edge_count = record[2];
+                    int local_yield_id = record.yield_id;
+                    int node_count = record.node_count;
+                    int64_t edge_count = record.edge_count;
                     int global_id = yield_id_counter++;
                     yield_count++;
 
@@ -305,9 +305,10 @@ std::pair<bool, int> Worker::process_cluster(int cluster_id, bool is_yielded) {
                         continue;
                     }
 
-                    // Send YIELD_REPORT to LB: [parent_id, child_id, node_count, edge_count]
-                    int yield_data[4] = {cluster_id, global_id, node_count, edge_count};
-                    MPI_Send(yield_data, 4, MPI_INT, 0,
+                    // Send YIELD_REPORT to LB as raw bytes
+                    struct { int parent_id; int child_id; int node_count; int64_t edge_count; } yield_data =
+                        {cluster_id, global_id, node_count, edge_count};
+                    MPI_Send(&yield_data, sizeof(yield_data), MPI_BYTE, 0,
                              to_int(MessageType::YIELD_REPORT), MPI_COMM_WORLD);
 
                     logger.info("Yield (real-time): cluster " + std::to_string(cluster_id) +

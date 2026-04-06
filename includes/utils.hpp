@@ -41,7 +41,7 @@ inline void write_binary_edgelist(const std::string& filepath,
     if (!out.is_open()) {
         throw std::runtime_error("Failed to open binary edgelist for writing: " + filepath);
     }
-    uint32_t num_edges = static_cast<uint32_t>(edges.size());
+    uint64_t num_edges = edges.size();
     out.write(reinterpret_cast<const char*>(&num_edges), sizeof(num_edges));
     out.write(reinterpret_cast<const char*>(edges.data()),
               num_edges * sizeof(std::pair<int, int>));
