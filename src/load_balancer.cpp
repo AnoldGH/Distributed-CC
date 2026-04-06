@@ -8,6 +8,7 @@
 #include <fstream>
 #include <filesystem>
 #include <stdexcept>
+#include <cstring>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
