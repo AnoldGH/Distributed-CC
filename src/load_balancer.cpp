@@ -363,8 +363,16 @@ std::vector<ClusterInfo> LoadBalancer::partition_clustering(const std::string& e
             continue;
         }
 
-        if (edge_count == 0 || cluster_info.node_count < drop_cluster_under) {
-            continue;  // cluster is completely disconnected, pass
+        if (edge_count == 0) {
+            logger.debug("Dropping cluster " + std::to_string(cluster_id) +
+                " (no edges, nodes=" + std::to_string(cluster_info.node_count) + ")");
+            continue;
+        }
+        if (cluster_info.node_count < drop_cluster_under) {
+            logger.debug("Dropping cluster " + std::to_string(cluster_id) +
+                " (nodes=" + std::to_string(cluster_info.node_count) +
+                " < drop_cluster_under=" + std::to_string(drop_cluster_under) + ")");
+            continue;
         }
 
         // Batch very small clusters together, by min_batch_size
