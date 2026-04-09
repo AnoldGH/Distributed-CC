@@ -2,7 +2,7 @@
 """Convert a text edgelist (CSV/TSV/space-delimited) to binary .bedgelist format.
 
 Binary format:
-    [4 bytes: uint32 num_edges]
+    [8 bytes: uint64 num_edges]
     [8 bytes per edge: int32 source, int32 target] x num_edges
 
 Usage:
@@ -41,7 +41,7 @@ def convert(input_path: str, output_path: str) -> None:
 
     num_edges = len(edges)
     with open(output_path, "wb") as f:
-        f.write(struct.pack("<I", num_edges))
+        f.write(struct.pack("<Q", num_edges))
         for src, tgt in edges:
             f.write(struct.pack("<ii", src, tgt))
 
