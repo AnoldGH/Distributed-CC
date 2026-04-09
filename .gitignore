@@ -1,8 +1,15 @@
 build/
 datasets/
 external/
-work-dir/
+work-dir*/
 .*/
 
-test.sh
+*.out
+*.log
+*.hist
+
+*clusters/
+tests/
+
+test*.sh
 compile_commands.json
