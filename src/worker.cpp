@@ -172,8 +172,9 @@ void Worker::run() {
         out.close();
         logger.info("Output aggregation complete. Worker output: " + worker_output_file);
 
-        // Attempt to aggregate for the next worker (outside of range)
-        delegating_worker += (size - 1);
+        // Attempt to aggregate for the next worker (outside of range).
+        // Stride = number of workers; 1 when rank 0 is the only worker (0 would loop forever).
+        delegating_worker += (size > 1) ? (size - 1) : 1;
         worker_subdir = output_dir + "worker_" + std::to_string(delegating_worker) + "/";
         worker_output_file = output_dir + "worker_" + std::to_string(delegating_worker) + ".out";
     }
