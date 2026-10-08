@@ -88,12 +88,13 @@ void Worker::run() {
 
         for (int i = 0; i < count; i += 2) {
             int cluster = assigned_clusters[i];
-            bool is_yielded = assigned_clusters[i + 1] != 0;
+            bool is_yielded = assigned_clusters[i + 1] == 1;
+            bool may_yield = assigned_clusters[i + 1] != 0;
             logger.info("Received cluster " + std::to_string(cluster) +
                 (is_yielded ? " (yielded)" : ""));
 
             // Process the cluster
-            auto [success, yield_count] = process_cluster(cluster, is_yielded);
+            auto [success, yield_count] = process_cluster(cluster, is_yielded, may_yield);
 
             // Send completion status: [cluster_id, yield_count]
             // yield_count lets the LB know whether YIELD_REPORTs are in transit
@@ -188,7 +189,7 @@ void Worker::run() {
 }
 
 // Process a single cluster
-std::pair<bool, int> Worker::process_cluster(int cluster_id, bool is_yielded) {
+std::pair<bool, int> Worker::process_cluster(int cluster_id, bool is_yielded, bool may_yield) {
     // TODO: implement actual cluster processing
     // For now, this is a placeholder that simulates work
 
@@ -217,7 +218,7 @@ std::pair<bool, int> Worker::process_cluster(int cluster_id, bool is_yielded) {
     int yield_count = 0;  // number of sub-clusters directly yielded; incremented by yield monitor
     std::string yield_dir;
     int yield_pipe[2] = {-1, -1};
-    if (yield_node_threshold > 0) {
+    if (may_yield) {
         yield_dir = work_dir + "/yield/" + std::to_string(cluster_id);
         if (pipe(yield_pipe) != 0) {
             logger.error("Failed to create yield pipe for cluster " + std::to_string(cluster_id));
@@ -240,22 +241,27 @@ std::pair<bool, int> Worker::process_cluster(int cluster_id, bool is_yielded) {
         // Output file paths: yielded clusters and yield-eligible roots write to yield/
         // so that partial results are never visible to worker-level aggregation.
         // If the cluster turns out not to yield, we move it back after the child exits.
-        std::string output_file = (is_yielded || yield_node_threshold > 0)
+        std::string output_file = (is_yielded || may_yield)
             ? work_dir + "/yield/" + std::to_string(cluster_id) + ".output"
             : work_dir + "/output/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".output";
-        std::string history_file = work_dir + "/history/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".hist";
+        // Per-cluster log and history files only at log level 2.
+        const bool per_cluster_files = this->log_level >= 2;
+        const int kernel_log_level = per_cluster_files ? this->log_level : -1;
+        std::string history_file = per_cluster_files
+            ? work_dir + "/history/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".hist"
+            : "/dev/null";
         std::string log_file = work_dir + "/logs/clusters/" + std::to_string(cluster_id) + ".log"; // TODO: since CC was built as a standalone app with its own logging system, we have to use a different file. In the future we should try to integrate the two systems into one unified logging system.
 
         // CM or WCC
         ConstrainedClustering* cc;
         if (method == "CM") {
-            cc = new CM(cluster_edgelist, this->algorithm, this->clustering_parameter, cluster_clustering_file, this->num_processors, output_file, log_file, history_file, this->log_level, this->connectedness_criterion, this->prune, this->mincut_type);
+            cc = new CM(cluster_edgelist, this->algorithm, this->clustering_parameter, cluster_clustering_file, this->num_processors, output_file, log_file, history_file, kernel_log_level, this->connectedness_criterion, this->prune, this->mincut_type);
         } else if (method == "WCC") {
-            cc = new MincutOnly(cluster_edgelist, cluster_clustering_file, this->num_processors, output_file, log_file, this->log_level, this->connectedness_criterion, this->mincut_type);
+            cc = new MincutOnly(cluster_edgelist, cluster_clustering_file, this->num_processors, output_file, log_file, kernel_log_level, this->connectedness_criterion, this->mincut_type);
         }
 
         // Configure yield if enabled
-        if (yield_node_threshold > 0) {
+        if (may_yield) {
             cc->set_yield_config(yield_dir, yield_node_threshold, yield_pipe[1]);
         }
 
@@ -396,7 +402,7 @@ std::pair<bool, int> Worker::process_cluster(int cluster_id, bool is_yielded) {
 
         // If a yield-eligible root didn't actually yield, move its output back
         // to the normal output dir for worker-level aggregation.
-        if (!is_yielded && yield_node_threshold > 0 && yield_count == 0) {
+        if (!is_yielded && may_yield && yield_count == 0) {
             std::string src = work_dir + "/yield/" + std::to_string(cluster_id) + ".output";
             std::string dst = work_dir + "/output/worker_" + std::to_string(rank) + "/" + std::to_string(cluster_id) + ".output";
             if (fs::exists(src)) {

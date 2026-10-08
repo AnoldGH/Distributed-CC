@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
                 fs::create_directories(logs_clusters_dir);
 
                 // Initialize LoadBalancer (this partitions clustering and initializes job queue)
-                lb = std::make_unique<LoadBalancer>(method, edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under, bypass_cluster);
+                lb = std::make_unique<LoadBalancer>(method, edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under, bypass_cluster, yield_node_threshold);
 
                 // Signal handling - Slurm sends SIGTERM before SIGKILL a job
                 // Also handle SIGABRT for internal errors (e.g., memory corruption, assertion failures)
@@ -282,7 +282,7 @@ int main(int argc, char** argv) {
                 fs::create_directories(logs_clusters_dir);
 
                 // Initialize LoadBalancer (this partitions clustering and initializes job queue)
-                lb = std::make_unique<LoadBalancer>(method, edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under, bypass_cluster);
+                lb = std::make_unique<LoadBalancer>(method, edgelist, existing_clustering, work_dir, output_file, log_level, use_rank_0_worker, partitioned_clusters_dir, partition_only, min_batch_cost, drop_cluster_under, bypass_cluster, yield_node_threshold);
 
                 // Signal handling - Slurm sends SIGTERM before SIGKILL a job
                 // Also handle SIGABRT for internal errors (e.g., memory corruption, assertion failures)
