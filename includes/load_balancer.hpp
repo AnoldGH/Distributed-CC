@@ -19,7 +19,7 @@ struct ClusterInfo {
 // Per-cluster assignment payload sent to workers via DISTRIBUTE_WORK.
 struct AssignedCluster {
     int cluster_id;
-    int is_yielded;     // 1 if this cluster is a yielded sub-cluster, 0 otherwise
+    int is_yielded;     // 1 = yielded sub-cluster, 2 = may yield, 0 = cannot yield
 };
 
 // Tree node for tracking hierarchical yield dependencies.
@@ -51,6 +51,7 @@ private:
     float min_batch_cost;
     int drop_cluster_under;
     bool auto_accept_clique;
+    int yield_node_threshold;
 
     // Comparator for job_queue: highest estimated cost on top (max-heap).
     struct CostCompare {
@@ -162,7 +163,8 @@ public:
                 bool partition_only = false,
                 float min_batch_cost = 200,
                 int drop_cluster_under = -1,
-                bool auto_accept_clique = false);
+                bool auto_accept_clique = false,
+                int yield_node_threshold = 0);
 
     /**
      * Runtime phase: Distribute jobs to workers

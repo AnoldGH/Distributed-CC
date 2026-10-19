@@ -27,7 +27,8 @@ LoadBalancer::LoadBalancer(const std::string& method,
                           bool partition_only,
                           float min_batch_cost,
                           int drop_cluster_under,
-                          bool auto_accept_clique)
+                          bool auto_accept_clique,
+                          int yield_node_threshold)
     : method(method),
       logger(work_dir + "/logs/load_balancer.log", log_level),
       work_dir(work_dir),
@@ -36,6 +37,7 @@ LoadBalancer::LoadBalancer(const std::string& method,
       min_batch_cost(min_batch_cost),
       drop_cluster_under(drop_cluster_under),
       auto_accept_clique(auto_accept_clique),
+      yield_node_threshold(yield_node_threshold),
       job_queue(CostCompare{this}) {
 
     const std::string clusters_dir = work_dir + "/" + "clusters";
@@ -494,7 +496,9 @@ bool LoadBalancer::assign_batch(int worker_rank) {
         }
 
         job_queue_active--;
-        int is_yielded = yield_to_root.count(cluster_info.cluster_id) ? 1 : 0;
+        // A root smaller than the threshold cannot yield.
+        int is_yielded = yield_to_root.count(cluster_info.cluster_id) ? 1
+            : (yield_node_threshold > 0 && cluster_info.node_count >= yield_node_threshold) ? 2 : 0;
         assign_clusters.push_back({cluster_info.cluster_id, is_yielded});
         in_flight_clusters[cluster_info.cluster_id] = cluster_info;
 
@@ -536,6 +540,7 @@ void LoadBalancer::run() {
     // but in-flight clusters may still yield new work.
     std::vector<int> pending_work_requests;
 
+    int messages_since_flush = 0;
     while (active_workers > 0) {
         // Listen to incoming messages from workers
         MPI_Status status;
@@ -662,7 +667,10 @@ void LoadBalancer::run() {
             --active_workers;
         }
 
-        logger.flush(); // flush per assignment
+        if (++messages_since_flush >= LOG_FLUSH_EVERY) {
+            logger.flush();
+            messages_since_flush = 0;
+        }
     }
 
     // Aggregation phase: combine outputs from all workers

@@ -5,6 +5,9 @@
 #include <chrono>
 #include <iostream>
 
+// Flush every N log writes / load-balancer messages.
+inline constexpr int LOG_FLUSH_EVERY = 50;
+
 enum class LogLevel {
     ERROR = -1,
     INFO = 0,
@@ -111,7 +114,7 @@ public:
         log_file_handle << log_message_prefix << " " << message << '\n';
 
         // Periodic flush
-        if (num_calls_to_log_write % 10 == 0) {
+        if (num_calls_to_log_write % LOG_FLUSH_EVERY == 0) {
             std::flush(log_file_handle);
         }
         num_calls_to_log_write++;
